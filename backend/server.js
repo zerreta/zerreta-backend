@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 // Configure CORS with more specific options
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3002', 'http://192.168.186.233:3002'], // Allow frontend applications on different ports
+  origin: ['https://zerreta-learnings-3ol0ykl05-pratheep-bits-projects.vercel.app', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow specific methods
   allowedHeaders: ['Content-Type', 'Authorization'], // Allow specific headers
   credentials: true // Allow cookies
@@ -60,7 +60,7 @@ const upload = multer({
 });
 
 // MongoDB Connection
-mongoose.connect('mongodb://localhost:27017/student-auth', {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/student-auth', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => {
