@@ -70,7 +70,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/student-a
   .catch((err) => {
     console.error('MongoDB connection error:', err);
   });
-
+//s
 // User Schema
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
