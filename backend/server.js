@@ -10,16 +10,12 @@ const app = express();
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
-// Configure CORS with more specific options
+// Configure CORS with more permissive settings for debugging
 app.use(cors({
-  origin: ['https://zerreta-learnings-3ol0ykl05-pratheep-bits-projects.vercel.app', 
-           'https://zerreta-learnings.vercel.app', 
-           'https://zerreta-frontend.vercel.app',
-           'http://localhost:3000',
-           'https://zerreta-frontend-git-main-pratheep-bits-projects.vercel.app'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow specific methods
-  allowedHeaders: ['Content-Type', 'Authorization'], // Allow specific headers
-  credentials: true // Allow cookies
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true
 }));
 
 // Serve static files
@@ -1292,6 +1288,27 @@ app.get('/', (req, res) => {
       auth: '/login',
       admin: '/admin/*',
       student: '/student/*'
+    }
+  });
+});
+
+// Add health check endpoints for debugging
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Backend server is up and running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Simple echo endpoint to test request/response
+app.post('/api/echo', (req, res) => {
+  res.json({
+    message: 'Echo endpoint successful',
+    receivedData: req.body,
+    headers: {
+      authorization: req.headers.authorization ? 'Present' : 'Missing',
+      contentType: req.headers['content-type']
     }
   });
 });
