@@ -1278,6 +1278,20 @@ app.get('/admin/students/points', authenticateToken, async (req, res) => {
   }
 });
 
+// Add root route for API info
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Zerreta NEET Preparation API',
+    status: 'online',
+    version: '1.0.0',
+    endpoints: {
+      auth: '/login',
+      admin: '/admin/*',
+      student: '/student/*'
+    }
+  });
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
