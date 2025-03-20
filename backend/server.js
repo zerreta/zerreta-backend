@@ -79,7 +79,7 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 
 // JWT Secret
-const JWT_SECRET = 'neet-admin-secure-jwt-secret-key-2025';
+const JWT_SECRET = process.env.JWT_SECRET || 'neet-admin-secure-jwt-secret-key-2025';
 
 // Create default admin user
 const createAdminUser = async () => {
