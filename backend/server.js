@@ -12,7 +12,11 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 // Configure CORS with more specific options
 app.use(cors({
-  origin: ['https://zerreta-learnings-3ol0ykl05-pratheep-bits-projects.vercel.app', 'http://localhost:3000'],
+  origin: ['https://zerreta-learnings-3ol0ykl05-pratheep-bits-projects.vercel.app', 
+           'https://zerreta-learnings.vercel.app', 
+           'https://zerreta-frontend.vercel.app',
+           'http://localhost:3000',
+           'https://zerreta-frontend-git-main-pratheep-bits-projects.vercel.app'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow specific methods
   allowedHeaders: ['Content-Type', 'Authorization'], // Allow specific headers
   credentials: true // Allow cookies
