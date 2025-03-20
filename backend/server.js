@@ -60,14 +60,16 @@ const upload = multer({
 });
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/student-auth', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-}).then(() => {
-  console.log('Connected to MongoDB');
-}).catch((err) => {
-  console.error('MongoDB connection error:', err);
-});
+console.log('Connecting to MongoDB...');
+console.log('Using connection string:', process.env.MONGODB_URI ? 'Connection string is set' : 'Connection string is missing!');
+
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/student-auth')
+  .then(() => {
+    console.log('Connected to MongoDB successfully');
+  })
+  .catch((err) => {
+    console.error('MongoDB connection error:', err);
+  });
 
 // User Schema
 const userSchema = new mongoose.Schema({
