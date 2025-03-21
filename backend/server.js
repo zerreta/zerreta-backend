@@ -219,7 +219,7 @@ app.post('/admin/students', authenticateToken, async (req, res) => {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    const { studentId, name, username, password, subjects, column1, column2, column3, column4, column5 } = req.body;
+    const { studentId, name, username, password, subjects, institution, column1, column2, column3, column4, column5 } = req.body;
     
     // Check if student ID already exists
     const existingStudentId = await Student.findOne({ studentId });
@@ -239,6 +239,7 @@ app.post('/admin/students', authenticateToken, async (req, res) => {
       name,
       username,
       password,
+      institution: institution || 'Default Institution',
       subjects: subjects || {
         physics: { level: '1', stage: '1' },
         chemistry: { level: '1', stage: '1' },
@@ -314,47 +315,28 @@ app.put('/admin/students/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    const { studentId, name, username, password, subjects, column1, column2, column3, column4, column5 } = req.body;
+    const { studentId, name, username, password, subjects, institution, column1, column2, column3, column4, column5 } = req.body;
     
-    // Check if student exists
+    // Find student by ID
     const student = await Student.findById(req.params.id);
     if (!student) {
       return res.status(404).json({ message: 'Student not found' });
     }
+    
+    // Update student fields
+    student.studentId = studentId || student.studentId;
+    student.name = name || student.name;
+    student.username = username || student.username;
+    student.password = password || student.password;
+    student.institution = institution || student.institution;
+    student.subjects = subjects || student.subjects;
+    student.column1 = column1 !== undefined ? column1 : student.column1;
+    student.column2 = column2 !== undefined ? column2 : student.column2;
+    student.column3 = column3 !== undefined ? column3 : student.column3;
+    student.column4 = column4 !== undefined ? column4 : student.column4;
+    student.column5 = column5 !== undefined ? column5 : student.column5;
 
-    // Check if studentId is being changed and if it already exists
-    if (studentId !== student.studentId) {
-      const existingStudentId = await Student.findOne({ studentId });
-      if (existingStudentId && existingStudentId._id.toString() !== req.params.id) {
-        return res.status(400).json({ message: 'Student ID already exists' });
-      }
-    }
-
-    // Check if username is being changed and if it already exists
-    if (username !== student.username) {
-      const existingUsername = await Student.findOne({ username });
-      if (existingUsername && existingUsername._id.toString() !== req.params.id) {
-        return res.status(400).json({ message: 'Username already exists' });
-      }
-    }
-
-    // Update student
-    const updatedStudent = await Student.findByIdAndUpdate(
-      req.params.id,
-      {
-        studentId,
-        name,
-        username,
-        password,
-        subjects,
-        column1,
-        column2,
-        column3,
-        column4,
-        column5
-      },
-      { new: true }
-    );
+    await student.save();
 
     // If password is changed, update the user account as well
     if (password !== student.password) {
@@ -368,7 +350,7 @@ app.put('/admin/students/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    res.json({ message: 'Student updated successfully', student: updatedStudent });
+    res.json({ message: 'Student updated successfully', student: student });
   } catch (error) {
     console.error('Error updating student:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -805,153 +787,87 @@ app.get('/student/test', authenticateToken, async (req, res) => {
   }
 });
 
-// Submit test answers and get results
-app.post('/student/test/submit', authenticateToken, async (req, res) => {
+// Process test completion and save results
+app.post('/student/complete-test', authenticateToken, async (req, res) => {
   try {
-    const { answers, metadata } = req.body;
+    const { 
+      testId, 
+      subject, 
+      stage, 
+      level, 
+      questions, 
+      score, 
+      timeTaken,
+      passedLevel 
+    } = req.body;
     
-    if (!answers || !Array.isArray(answers)) {
-      return res.status(400).json({ message: 'Valid answers array must be provided' });
-    }
+    const studentId = req.user.id;
     
-    const results = [];
-    let correctCount = 0;
-    let incorrectCount = 0;
+    console.log(`Saving test results for student ${studentId}, subject ${subject}, score ${score}`);
     
-    // Process each answer
-    for (const answer of answers) {
-      const { questionId, selectedOption } = answer;
-      
-      // Map letter options (A,B,C,D) to numeric options (0,1,2,3) if needed
-      const mappedSelectedOption = 
-        selectedOption && typeof selectedOption === 'string' && 
-        ['A', 'B', 'C', 'D'].includes(selectedOption) 
-          ? ['A', 'B', 'C', 'D'].indexOf(selectedOption) 
-          : selectedOption;
-      
-      // Find the question
-      const question = await Question.findById(questionId);
-      
-      if (!question) {
-        results.push({
-          questionId,
-          correct: false,
-          message: 'Question not found'
-        });
-        continue;
-      }
-      
-      // Check if the answer is correct
-      // - Handle both letter and numeric formats
-      let isCorrect = false;
-      
-      if (typeof question.correctOption === 'number') {
-        // If correctOption is a number (0,1,2,3)
-        if (typeof selectedOption === 'string' && ['A', 'B', 'C', 'D'].includes(selectedOption)) {
-          // If selectedOption is a letter (A,B,C,D)
-          isCorrect = ['A', 'B', 'C', 'D'].indexOf(selectedOption) === question.correctOption;
-        } else {
-          // If selectedOption is a number
-          isCorrect = parseInt(selectedOption) === question.correctOption;
-        }
-      } else if (typeof question.correctOption === 'string') {
-        // If correctOption is a string (A,B,C,D or other)
-        isCorrect = selectedOption === question.correctOption;
-      }
-      
-      if (isCorrect) {
-        correctCount++;
-      } else {
-        incorrectCount++;
-      }
-      
-      // Format correctOption to match the format of selectedOption for the response
-      let formattedCorrectOption = question.correctOption;
-      if (typeof question.correctOption === 'number' && 
-          typeof selectedOption === 'string' && 
-          ['A', 'B', 'C', 'D'].includes(selectedOption)) {
-        formattedCorrectOption = ['A', 'B', 'C', 'D'][question.correctOption];
-      }
-      
-      // Prepare response with the results
-      results.push({
-        questionId: questionId,
-        selectedOption: selectedOption,
-        correctOption: formattedCorrectOption,
-        isCorrect: isCorrect,
-        pointsEarned: isCorrect ? 1 : 0,
-        explanation: question.explanation || '' // Include explanation in response
-      });
-    }
-    
-    // Apply NEET marking scheme: +4 for correct, -1 for wrong
-    const score = (correctCount * 4) - incorrectCount;
-    const maxPossibleScore = answers.length * 4;
-    
-    // Calculate percentage
-    const percentage = (score / maxPossibleScore) * 100;
-    
-    // If metadata is provided, use it to update student progress
-    if (metadata && metadata.subject && metadata.stage && metadata.level) {
-      try {
-        const student = await Student.findById(req.user.id);
-        
-        if (student) {
-          // Initialize subject if it doesn't exist
-          if (!student.subjects) {
-            student.subjects = {};
-          }
-          
-          if (!student.subjects[metadata.subject]) {
-            student.subjects[metadata.subject] = { stage: "1", level: "1" };
-          }
-          
-          // Only update progress if the student passed AND this is their current level or next level
-          if (metadata.passedLevel) {
-            const currentStage = parseInt(student.subjects[metadata.subject].stage);
-            const currentLevel = parseInt(student.subjects[metadata.subject].level);
-            const attemptedStage = parseInt(metadata.stage);
-            const attemptedLevel = parseInt(metadata.level);
-            
-            // Student has completed their current level
-            if (currentStage === attemptedStage && currentLevel === attemptedLevel) {
-              // If this is the last level of the stage, move to next stage
-              if (currentLevel === 4) {
-                student.subjects[metadata.subject].stage = (currentStage + 1).toString();
-                student.subjects[metadata.subject].level = "1";
-              } else {
-                // Otherwise move to next level
-                student.subjects[metadata.subject].level = (currentLevel + 1).toString();
-              }
-              
-              await student.save();
-            }
-            // Student has completed the first level of the next stage
-            else if (currentStage + 1 === attemptedStage && attemptedLevel === 1 && currentLevel === 4) {
-              student.subjects[metadata.subject].stage = attemptedStage.toString();
-              student.subjects[metadata.subject].level = "2"; // Move to level 2 of new stage
-              
-              await student.save();
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error updating student progress:', error);
-        // Continue with response, don't fail the whole request if progress update fails
-      }
-    }
-    
-    res.json({
+    // Create test history record
+    const testResult = new TestHistory({
+      studentId,
+      subject,
+      stage,
+      level,
       score,
-      maxScore: maxPossibleScore,
-      correctCount,
-      incorrectCount,
-      unattemptedCount: 0, // This would need to be calculated if we track all questions
-      percentage,
-      results
+      questions,
+      totalTime: Math.round(timeTaken / 60), // Convert seconds to minutes
+      passedLevel: passedLevel || score >= 70, // Default passing threshold is 70%
+      date: new Date()
+    });
+    
+    await testResult.save();
+    console.log('Test history saved successfully with ID:', testResult._id);
+    
+    // Update student level if they passed
+    if (passedLevel || score >= 70) {
+      try {
+        const student = await Student.findById(studentId);
+        
+        if (!student.subjects) {
+          student.subjects = {};
+        }
+        
+        if (!student.subjects[subject]) {
+          student.subjects[subject] = { stage: '1', level: '1' };
+        }
+        
+        // Convert existing level to number, increment, then back to string
+        const currentLevel = parseInt(student.subjects[subject].level);
+        const currentStage = parseInt(student.subjects[subject].stage);
+        
+        // Only update if the completed level is the current level
+        if (
+          (stage === student.subjects[subject].stage && level === student.subjects[subject].level) ||
+          // Or if it's a higher stage/level than current
+          (parseInt(stage) > currentStage) ||
+          (parseInt(stage) === currentStage && parseInt(level) > currentLevel)
+        ) {
+          // Check if we need to move to next stage
+          if (currentLevel >= 5) {
+            student.subjects[subject].stage = (currentStage + 1).toString();
+            student.subjects[subject].level = '1';
+          } else {
+            student.subjects[subject].level = (currentLevel + 1).toString();
+          }
+          
+          await student.save();
+          console.log(`Student level updated to Stage ${student.subjects[subject].stage}, Level ${student.subjects[subject].level}`);
+        }
+      } catch (levelUpdateError) {
+        console.error('Error updating student level:', levelUpdateError);
+        // We don't want to fail the whole request if just the level update fails
+      }
+    }
+    
+    res.status(201).json({ 
+      message: 'Test result saved successfully',
+      testId: testResult._id 
     });
   } catch (error) {
-    console.error('Error submitting test:', error);
+    console.error('Error saving test history:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -1033,6 +949,41 @@ app.get('/student/test-history', authenticateToken, async (req, res) => {
     res.json(formattedHistory);
   } catch (error) {
     console.error('Error fetching test history:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get all test history for a student as a raw array
+app.get('/student/all-test-history', authenticateToken, async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    
+    // Fetch all test history for the student
+    const testHistory = await TestHistory.find({ studentId })
+      .sort({ date: -1 }) // Sort by date descending (newest first)
+      .lean();
+    
+    // Transform each test for the history table format
+    const formattedTests = testHistory.map(test => {
+      return {
+        _id: test._id,
+        subject: getSubjectName(test.subject),
+        stage: test.stage,
+        level: test.level,
+        score: test.score,
+        totalQuestions: test.questions.length,
+        correctAnswers: test.questions.filter(q => q.isCorrect).length,
+        timeTaken: test.totalTime * 60, // Convert minutes to seconds
+        passedLevel: test.passedLevel,
+        startTime: test.date,
+        endTime: new Date(new Date(test.date).getTime() + test.totalTime * 60 * 1000).toISOString(),
+        date: test.date
+      };
+    });
+    
+    res.json(formattedTests);
+  } catch (error) {
+    console.error('Error fetching all test history:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -1311,6 +1262,92 @@ app.post('/api/echo', (req, res) => {
       contentType: req.headers['content-type']
     }
   });
+});
+
+// New endpoint for backward compatibility
+app.post('/student/test/submit', authenticateToken, async (req, res) => {
+  try {
+    // Forward to the new endpoint
+    const { 
+      subject, 
+      stage, 
+      level, 
+      answers, 
+      score, 
+      timeTaken,
+      passedLevel 
+    } = req.body;
+    
+    const studentId = req.user.id;
+    
+    console.log(`Forwarding test submission to /student/complete-test endpoint for student ${studentId}`);
+    
+    // Create test history record
+    const testResult = new TestHistory({
+      studentId,
+      subject,
+      stage,
+      level,
+      score,
+      questions: answers.map(a => ({
+        questionId: a.questionId,
+        selectedOption: a.selectedOption,
+        isCorrect: a.isCorrect || false
+      })),
+      totalTime: Math.round(timeTaken / 60), // Convert seconds to minutes
+      passedLevel: passedLevel || score >= 70, // Default passing threshold is 70%
+      date: new Date()
+    });
+    
+    await testResult.save();
+    console.log('Test history saved successfully with ID:', testResult._id);
+    
+    // Return success
+    res.status(201).json({ 
+      message: 'Test result saved successfully',
+      testId: testResult._id,
+      results: answers
+    });
+  } catch (error) {
+    console.error('Error saving test history:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get all unique institutions
+app.get('/admin/institutions', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+    
+    // Find all unique institution values
+    const institutions = await Student.distinct('institution');
+    
+    res.status(200).json(institutions);
+  } catch (error) {
+    console.error('Error fetching institutions:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get students by institution
+app.get('/admin/students/institution/:institution', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+    
+    const { institution } = req.params;
+    
+    // Find all students from a specific institution
+    const students = await Student.find({ institution });
+    
+    res.status(200).json(students);
+  } catch (error) {
+    console.error('Error fetching students by institution:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
