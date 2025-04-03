@@ -4,19 +4,11 @@ const questionSchema = new mongoose.Schema({
   subject: { 
     type: String, 
     required: true,
-    enum: ['physics', 'chemistry', 'botany', 'zoology']
+    enum: ['physics', 'chemistry', 'biology']
   },
-  stage: { 
+  topicNumber: { 
     type: String, 
     required: true 
-  },
-  level: { 
-    type: String, 
-    required: true 
-  },
-  topic: {
-    type: String,
-    default: ''
   },
   questionText: { 
     type: String, 
@@ -31,7 +23,8 @@ const questionSchema = new mongoose.Schema({
     required: true 
   },
   explanation: { 
-    type: String 
+    type: String,
+    default: ''
   },
   difficulty: { 
     type: String, 
@@ -49,6 +42,19 @@ const questionSchema = new mongoose.Schema({
   createdAt: { 
     type: Date, 
     default: Date.now 
+  },
+  // Legacy fields for backward compatibility
+  stage: { 
+    type: String,
+    default: '1'
+  },
+  level: { 
+    type: String,
+    default: '1'
+  },
+  topic: {
+    type: String,
+    default: ''
   }
 });
 

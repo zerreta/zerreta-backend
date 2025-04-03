@@ -15,14 +15,24 @@ const studentSchema = new mongoose.Schema({
       level: { type: String, default: '1' },
       stage: { type: String, default: '1' }
     },
-    botany: {
-      level: { type: String, default: '1' },
-      stage: { type: String, default: '1' }
-    },
-    zoology: {
+    biology: {
       level: { type: String, default: '1' },
       stage: { type: String, default: '1' }
     }
+  },
+  // Topic progress field to track progress by subject and topic number
+  topicProgress: {
+    type: Map,
+    of: {
+      type: Map,
+      of: {
+        progress: { type: Number, default: 0 },
+        completed: { type: Boolean, default: false },
+        attemptsCount: { type: Number, default: 0 },
+        lastAttemptDate: { type: Date }
+      }
+    },
+    default: {}
   },
   column1: { type: String },
   column2: { type: String },

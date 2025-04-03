@@ -59,18 +59,42 @@ const upload = multer({
   }
 });
 
-// MongoDB Connection
+// MongoDB Connection with improved error handling
 console.log('Connecting to MongoDB...');
 console.log('Using connection string:', process.env.MONGODB_URI ? 'Connection string is set' : 'Connection string is missing!');
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/student-auth')
+const connectWithRetry = () => {
+  mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/student-auth', {
+    useNewUrlParser: true, 
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 5000
+  })
   .then(() => {
     console.log('Connected to MongoDB successfully');
+    // Create initial users after successful connection
+    createAdminUser();
+    createTestStudent();
   })
   .catch((err) => {
     console.error('MongoDB connection error:', err);
+    console.log('Retrying connection in 5 seconds...');
+    setTimeout(connectWithRetry, 5000);
   });
-//s
+};
+
+// Set up mongoose connection event listeners
+mongoose.connection.on('error', (err) => {
+  console.error('MongoDB connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB disconnected, attempting to reconnect...');
+  setTimeout(connectWithRetry, 5000);
+});
+
+// Initial connection attempt
+connectWithRetry();
+
 // User Schema
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
@@ -119,9 +143,6 @@ const createTestStudent = async () => {
   }
 };
 
-createAdminUser();
-createTestStudent();
-
 // Import Student model
 const Student = require('./models/Student');
 // Import Question model
@@ -131,8 +152,8 @@ const Question = require('./models/Question');
 const testHistorySchema = new mongoose.Schema({
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   subject: { type: String, required: true },
-  stage: { type: String, required: true },
-  level: { type: String, required: true },
+  stage: { type: String, default: '1' }, // Legacy field, keep for backward compatibility
+  level: { type: String, default: '1' }, // Legacy field, keep for backward compatibility
   score: { type: Number, required: true },
   passedLevel: { type: Boolean, default: false },
   totalTime: { type: Number, required: true }, // in minutes
@@ -143,36 +164,123 @@ const testHistorySchema = new mongoose.Schema({
     isCorrect: Boolean,
     timeSpent: Number,
     allocatedTime: Number,
-    explanation: String
+    explanation: String,
+    topicNumber: String, // Track which topic a question belongs to
+    difficulty: { type: String, enum: ['easy', 'medium', 'hard'], default: 'medium' },
+    attemptCount: { type: Number, default: 1 }, // Track if this question was attempted multiple times
+    questionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Question' } // Reference to original question
   }],
-  date: { type: Date, default: Date.now }
+  date: { type: Date, default: Date.now },
+  // Fields for topic-based tests
+  testMode: { type: String, enum: ['practice', 'assessment'], required: true }, // Indicates if this is a practice or assessment test
+  topicNumber: { type: String }, // Topic number for practice tests
+  topics: [{ type: String }], // Array of topics for assessment tests
+  
+  // Enhanced analytics fields
+  deviceInfo: {
+    browser: String,
+    platform: String,
+    screenSize: String
+  },
+  timingDetails: {
+    startTime: { type: Date },
+    endTime: { type: Date },
+    pauseDuration: { type: Number, default: 0 }, // Time spent in paused state in seconds
+    questionTransitionTimes: [Number] // Time taken to move between questions
+  },
+  performanceMetrics: {
+    correctAnswers: { type: Number, default: 0 },
+    incorrectAnswers: { type: Number, default: 0 },
+    unanswered: { type: Number, default: 0 },
+    topicWisePerformance: mongoose.Schema.Types.Mixed, // Object with topic numbers as keys and scores as values
+    averageTimePerQuestion: { type: Number, default: 0 }
+  },
+  userActions: {
+    optionChanges: { type: Number, default: 0 }, // How many times user changed their answer
+    reviewMarked: [Number] // Question numbers marked for review
+  },
+  // Flag to track if this attempt was completed or abandoned
+  isCompleted: { type: Boolean, default: true },
+  // Comparison with previous attempts
+  improvement: {
+    previousBestScore: { type: Number, default: 0 },
+    scoreImprovement: { type: Number, default: 0 },
+    timeImprovement: { type: Number, default: 0 }
+  }
 });
 
 const TestHistory = mongoose.model('TestHistory', testHistorySchema);
 
-// Middleware to authenticate token
+// Middleware to authenticate token - enhanced version
 const authenticateToken = (req, res, next) => {
   console.log('Authenticating token...');
   const authHeader = req.headers['authorization'];
-  console.log('Authorization header:', authHeader);
+  console.log('Authorization header:', authHeader ? 'Present' : 'Missing');
   
   const token = authHeader && authHeader.split(' ')[1];
   
   if (!token) {
     console.log('No token provided');
-    return res.status(401).json({ message: 'Access denied' });
+    return res.status(401).json({ 
+      message: 'Access denied',
+      error: 'NO_TOKEN_PROVIDED'
+    });
   }
 
   try {
     console.log('Verifying token...');
     const decoded = jwt.verify(token, JWT_SECRET);
-    console.log('Token decoded successfully:', decoded);
+    
+    // Ensure the token has the required fields
+    if (!decoded.userId || !decoded.role) {
+      console.error('Token missing required fields');
+      return res.status(403).json({ 
+        message: 'Invalid token format',
+        error: 'INVALID_TOKEN_FORMAT'
+      });
+    }
+    
+    console.log('Token decoded successfully:', { 
+      userId: decoded.userId,
+      role: decoded.role,
+      username: decoded.username
+    });
+    
     req.user = decoded;
     next();
   } catch (error) {
     console.error('Token verification failed:', error.message);
-    res.status(403).json({ message: 'Invalid token' });
+    res.status(403).json({ 
+      message: 'Invalid token',
+      error: 'INVALID_TOKEN'
+    });
   }
+};
+
+// Add this middleware after the authenticateToken middleware
+const adminOnly = (req, res, next) => {
+  // Check if the user is an admin
+  if (req.user.role !== 'admin') {
+    console.log('Unauthorized admin access attempt:', req.user);
+    return res.status(403).json({ 
+      message: 'Access denied. Admin privileges required.',
+      error: 'UNAUTHORIZED_ROLE'
+    });
+  }
+  next();
+};
+
+// Add studentOnly middleware similar to adminOnly
+const studentOnly = (req, res, next) => {
+  // Check if the user is a student
+  if (req.user.role !== 'student') {
+    console.log('Unauthorized student access attempt:', req.user);
+    return res.status(403).json({ 
+      message: 'Access denied. Student privileges required.',
+      error: 'UNAUTHORIZED_ROLE'
+    });
+  }
+  next();
 };
 
 // Login Route
@@ -197,13 +305,21 @@ app.post('/login', async (req, res) => {
 
     console.log('Password verified, generating token');
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
+      { 
+        userId: user._id, 
+        role: user.role,
+        username: user.username  // Add username to token
+      },
       JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '24h' }  // Extend token lifetime to 24 hours
     );
 
     console.log('Login successful for user:', username);
-    res.json({ token, role: user.role });
+    res.json({ 
+      token, 
+      role: user.role,
+      username: user.username  // Return username in response
+    });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -213,12 +329,8 @@ app.post('/login', async (req, res) => {
 // Student Management Routes (Admin only)
 
 // Create a new student
-app.post('/admin/students', authenticateToken, async (req, res) => {
+app.post('/admin/students', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     const { studentId, name, username, password, subjects, institution, column1, column2, column3, column4, column5 } = req.body;
     
     // Check if student ID already exists
@@ -271,14 +383,9 @@ app.post('/admin/students', authenticateToken, async (req, res) => {
 });
 
 // Get all students with detailed information
-app.get('/admin/students', authenticateToken, async (req, res) => {
+app.get('/admin/students', authenticateToken, adminOnly, async (req, res) => {
   console.log('GET /admin/students endpoint called');
   try {
-    if (req.user.role !== 'admin') {
-      console.log('User is not admin:', req.user);
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     console.log('Fetching students from database...');
     const students = await Student.find();
     console.log('Students found:', students.length);
@@ -290,12 +397,8 @@ app.get('/admin/students', authenticateToken, async (req, res) => {
 });
 
 // Get a specific student
-app.get('/admin/students/:id', authenticateToken, async (req, res) => {
+app.get('/admin/students/:id', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     const student = await Student.findById(req.params.id);
     if (!student) {
       return res.status(404).json({ message: 'Student not found' });
@@ -309,12 +412,8 @@ app.get('/admin/students/:id', authenticateToken, async (req, res) => {
 });
 
 // Update a student
-app.put('/admin/students/:id', authenticateToken, async (req, res) => {
+app.put('/admin/students/:id', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     const { studentId, name, username, password, subjects, institution, column1, column2, column3, column4, column5 } = req.body;
     
     // Find student by ID
@@ -358,12 +457,8 @@ app.put('/admin/students/:id', authenticateToken, async (req, res) => {
 });
 
 // Delete a student
-app.delete('/admin/students/:id', authenticateToken, async (req, res) => {
+app.delete('/admin/students/:id', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     // Check if student exists
     const student = await Student.findById(req.params.id);
     if (!student) {
@@ -389,12 +484,8 @@ app.delete('/admin/students/:id', authenticateToken, async (req, res) => {
 // Student Routes (for student users)
 
 // Get current student data
-app.get('/student/profile', authenticateToken, async (req, res) => {
+app.get('/student/profile', authenticateToken, studentOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'student') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     // Find the user to get the username
     const user = await User.findById(req.user.userId);
     if (!user) {
@@ -407,7 +498,78 @@ app.get('/student/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Student data not found' });
     }
 
-    res.json(student);
+    // Get a plain JavaScript object from the Mongoose document
+    const studentObj = student.toObject();
+    
+    // Check if req.query.force is truthy - this means we want to force a direct DB check
+    if (req.query.force) {
+      console.log('Force refresh requested for student profile');
+      
+      // Connect to MongoDB directly to get full subject data
+      try {
+        const directDb = mongoose.connection.db;
+        const studentsCollection = directDb.collection('students');
+        
+        // Find the student directly
+        const rawStudent = await studentsCollection.findOne({ username: user.username });
+        
+        // Update the subjects with any capitalized versions
+        if (rawStudent && rawStudent.subjects) {
+          console.log('Raw subjects from DB:', Object.keys(rawStudent.subjects));
+          
+          // Replace subjects with the raw version from the DB
+          studentObj.subjects = rawStudent.subjects;
+          
+          console.log('Updated student object with raw subjects:', Object.keys(studentObj.subjects));
+        }
+      } catch (dbErr) {
+        console.error('Error getting raw student data:', dbErr);
+        // Continue with the normal response if direct DB access fails
+      }
+    }
+    
+    // Make sure we always have capitalized versions of subjects
+    if (studentObj.subjects) {
+      const subjects = studentObj.subjects;
+      
+      // For each lowercase subject, also add a capitalized version if not present
+      if (subjects.physics && !subjects.Physics) {
+        subjects.Physics = { ...subjects.physics };
+      }
+      
+      if (subjects.chemistry && !subjects.Chemistry) {
+        subjects.Chemistry = { ...subjects.chemistry };
+      }
+      
+      if (subjects.botany && !subjects.Botany) {
+        subjects.Botany = { ...subjects.botany };
+      }
+      
+      if (subjects.zoology && !subjects.Zoology) {
+        subjects.Zoology = { ...subjects.zoology };
+      }
+      
+      // Also do the reverse - add lowercase if only capitalized exists
+      if (subjects.Physics && !subjects.physics) {
+        subjects.physics = { ...subjects.Physics };
+      }
+      
+      if (subjects.Chemistry && !subjects.chemistry) {
+        subjects.chemistry = { ...subjects.Chemistry };
+      }
+      
+      if (subjects.Botany && !subjects.botany) {
+        subjects.botany = { ...subjects.Botany };
+      }
+      
+      if (subjects.Zoology && !subjects.zoology) {
+        subjects.zoology = { ...subjects.Zoology };
+      }
+      
+      console.log('Final subject keys in response:', Object.keys(subjects));
+    }
+
+    res.json(studentObj);
   } catch (error) {
     console.error('Error getting student profile:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -417,36 +579,53 @@ app.get('/student/profile', authenticateToken, async (req, res) => {
 // Question Management Routes
 
 // Create a new question (Admin only)
-app.post('/admin/questions', authenticateToken, async (req, res) => {
+app.post('/admin/questions', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
-    const { subject, stage, level, topic, questionText, options, correctOption, explanation, difficulty, imageUrl, timeAllocation } = req.body;
+    const { subject, topicNumber, questionText, options, correctOption, explanation, difficulty, imageUrl, timeAllocation } = req.body;
 
     console.log('Creating question with data:', { 
-      subject, stage, level, topic, questionText, 
+      subject, topicNumber, questionText, 
       options: options ? options.length : 'none', 
       correctOption, 
-      imageUrl: imageUrl || 'none'
+      imageUrl: imageUrl || 'none',
+      explanation: explanation ? `${explanation.substring(0, 30)}... (${explanation.length} chars)` : 'none'
     });
 
-    if (!subject || !stage || !level || !questionText || !options || correctOption === undefined) {
-      return res.status(400).json({ message: 'Required fields missing' });
+    if (!subject || !topicNumber || !questionText) {
+      return res.status(400).json({ message: 'Required fields missing: subject, topicNumber or questionText' });
     }
+
+    // Validate options array
+    if (!options || !Array.isArray(options) || options.length < 2) {
+      return res.status(400).json({ message: 'Required field missing: options must be an array with at least 2 items' });
+    }
+
+    // Validate at least one non-empty option
+    if (options.every(option => !option || option.trim() === '')) {
+      return res.status(400).json({ message: 'At least one option must not be empty' });
+    }
+
+    // Validate correctOption
+    if (correctOption === undefined || correctOption === null || isNaN(Number(correctOption))) {
+      return res.status(400).json({ message: 'Required field missing: correctOption must be a number' });
+    }
+
+    // Ensure explanation is properly formatted
+    let processedExplanation = explanation || '';
+    if (processedExplanation === 'undefined' || processedExplanation === 'null') {
+      processedExplanation = '';
+    }
+
+    console.log('Processing explanation:', processedExplanation ? 'YES' : 'NO', 'Length:', processedExplanation.length);
 
     // Create new question
     const newQuestion = new Question({
       subject,
-      stage,
-      level,
-      topic: topic || '',
+      topicNumber,
       questionText,
       options,
       correctOption,
-      explanation: explanation || '',
+      explanation: processedExplanation,
       difficulty: difficulty || 'medium',
       imageUrl: imageUrl || '',
       timeAllocation: timeAllocation || 60
@@ -455,6 +634,7 @@ app.post('/admin/questions', authenticateToken, async (req, res) => {
     await newQuestion.save();
     console.log('Question created successfully with ID:', newQuestion._id);
     console.log('Image URL saved:', newQuestion.imageUrl);
+    console.log('Explanation saved:', processedExplanation ? `(${processedExplanation.length} chars)` : 'none');
     
     res.status(201).json({ message: 'Question created successfully', question: newQuestion });
   } catch (error) {
@@ -464,13 +644,8 @@ app.post('/admin/questions', authenticateToken, async (req, res) => {
 });
 
 // Bulk upload questions (Admin only)
-app.post('/admin/questions/bulk', authenticateToken, async (req, res) => {
+app.post('/admin/questions/bulk', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
     const { questions } = req.body;
     
     console.log('Received bulk upload request with', questions ? questions.length : 0, 'questions');
@@ -488,26 +663,20 @@ app.post('/admin/questions/bulk', authenticateToken, async (req, res) => {
     for (let i = 0; i < questions.length; i++) {
       const question = questions[i];
       
-      if (!question.subject || !question.stage || !question.level || 
+      if (!question.subject || !question.topicNumber || 
           !question.questionText || !question.options || question.correctOption === undefined) {
         console.error(`Validation failed for question ${i}:`, JSON.stringify(question, null, 2));
         return res.status(400).json({ 
           message: `Question at index ${i} is missing required fields: ${
             [
               !question.subject ? 'subject' : null,
-              !question.stage ? 'stage' : null,
-              !question.level ? 'level' : null,
+              !question.topicNumber ? 'topicNumber' : null,
               !question.questionText ? 'questionText' : null,
               !question.options ? 'options' : null,
               question.correctOption === undefined ? 'correctOption' : null
             ].filter(Boolean).join(', ')
           }` 
         });
-      }
-      
-      // Ensure topic is set (default to empty string if not provided)
-      if (!question.topic) {
-        question.topic = '';
       }
       
       // Ensure timeAllocation is a number
@@ -546,10 +715,6 @@ app.post('/admin/questions/bulk', authenticateToken, async (req, res) => {
       
       if (question.explanation) {
         question.explanation = question.explanation.normalize('NFC');
-      }
-      
-      if (question.topic) {
-        question.topic = question.topic.normalize('NFC');
       }
     }
     
@@ -612,20 +777,14 @@ app.post('/admin/questions/bulk', authenticateToken, async (req, res) => {
 });
 
 // Get all questions (Admin only)
-app.get('/admin/questions', authenticateToken, async (req, res) => {
+app.get('/admin/questions', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-    
     // Get filter parameters
-    const { subject, stage, level } = req.query;
+    const { subject, topicNumber } = req.query;
     const filter = {};
     
     if (subject) filter.subject = subject;
-    if (stage) filter.stage = stage;
-    if (level) filter.level = level;
+    if (topicNumber) filter.topicNumber = topicNumber;
     
     const questions = await Question.find(filter);
     res.json(questions);
@@ -636,13 +795,8 @@ app.get('/admin/questions', authenticateToken, async (req, res) => {
 });
 
 // Get a specific question by ID (Admin only)
-app.get('/admin/questions/:id', authenticateToken, async (req, res) => {
+app.get('/admin/questions/:id', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-    
     const question = await Question.findById(req.params.id);
     
     if (!question) {
@@ -657,18 +811,13 @@ app.get('/admin/questions/:id', authenticateToken, async (req, res) => {
 });
 
 // Update a question (Admin only)
-app.put('/admin/questions/:id', authenticateToken, async (req, res) => {
+app.put('/admin/questions/:id', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
-    const { subject, stage, level, topic, questionText, options, correctOption, explanation, difficulty, imageUrl, timeAllocation } = req.body;
+    const { subject, topicNumber, questionText, options, correctOption, explanation, difficulty, imageUrl, timeAllocation } = req.body;
 
     console.log('Updating question with data:', { 
       id: req.params.id,
-      subject, stage, level, topic, questionText, 
+      subject, topicNumber, questionText, 
       options: options ? options.length : 'none', 
       correctOption, 
       imageUrl: imageUrl || 'none'
@@ -678,9 +827,7 @@ app.put('/admin/questions/:id', authenticateToken, async (req, res) => {
       req.params.id,
       { 
         subject,
-        stage,
-        level,
-        topic: topic || '',
+        topicNumber,
         questionText,
         options,
         correctOption,
@@ -707,13 +854,8 @@ app.put('/admin/questions/:id', authenticateToken, async (req, res) => {
 });
 
 // Delete a question (Admin only)
-app.delete('/admin/questions/:id', authenticateToken, async (req, res) => {
+app.delete('/admin/questions/:id', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-    
     const deletedQuestion = await Question.findByIdAndDelete(req.params.id);
     
     if (!deletedQuestion) {
@@ -727,157 +869,385 @@ app.delete('/admin/questions/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Get questions for a test (Student)
-app.get('/student/test', authenticateToken, async (req, res) => {
+// Student endpoint to get topic-based test questions
+app.get('/student/test', authenticateToken, studentOnly, async (req, res) => {
   try {
-    const { subject, stage, level } = req.query;
+    // Extract test parameters from query
+    const { subject, mode } = req.query;
     
-    if (!subject || !stage || !level) {
-      return res.status(400).json({ message: 'Subject, stage, and level are required' });
+    if (!subject) {
+      return res.status(400).json({ message: 'Subject is required' });
     }
     
-    // Find questions matching the criteria
-    const questions = await Question.find({ 
-      subject: subject,
-      stage: stage,
-      level: level
-    });
+    let query = { subject: subject.toLowerCase() };
+    let questionCount = 20;  // Default number of questions
     
-    // Return questions with all necessary fields for the test
-    const testQuestions = questions.map(q => {
-      // Log the image URL for debugging
-      console.log(`Question ${q._id} image URL:`, q.imageUrl);
+    // Handle different test modes
+    if (mode === 'practice') {
+      // For practice mode, filter by topic number
+      const { topicNumber } = req.query;
       
-      return {
-        id: q._id,
-        questionText: q.questionText,
-        optionA: q.options[0] || '',
-        optionB: q.options[1] || '',
-        optionC: q.options[2] || '',
-        optionD: q.options[3] || '',
-        // Include the full options array as well for debugging
-        options: q.options || [],
-        subject: q.subject,
-        stage: q.stage,
-        level: q.level,
-        difficulty: q.difficulty,
-        imageUrl: q.imageUrl || '',
-        correctOption: typeof q.correctOption === 'number' ? 
-                    ['A', 'B', 'C', 'D'][q.correctOption] : q.correctOption || 'A'
-      };
-    });
-    
-    // Log a sample question to debug
-    if (testQuestions.length > 0) {
-      console.log('Sample question being sent to frontend:', JSON.stringify(testQuestions[0], null, 2));
-      console.log('First question options:', {
-        optionA: testQuestions[0].optionA,
-        optionB: testQuestions[0].optionB,
-        optionC: testQuestions[0].optionC,
-        optionD: testQuestions[0].optionD,
-        fullOptions: testQuestions[0].options,
-        imageUrl: testQuestions[0].imageUrl // Add the imageUrl to the debug output
-      });
+      if (!topicNumber) {
+        return res.status(400).json({ message: 'Topic number is required for practice mode' });
+      }
+      
+      query.topicNumber = topicNumber;
+      questionCount = 20;  // 20 questions for practice tests
+    } 
+    else if (mode === 'assessment') {
+      // For assessment mode, filter by selected topics
+      const { topics, count } = req.query;
+      
+      if (!topics) {
+        return res.status(400).json({ message: 'Topics are required for assessment mode' });
+      }
+      
+      const topicsList = topics.split(',');
+      query.topicNumber = { $in: topicsList };
+      
+      // Use requested count or default to 40
+      questionCount = parseInt(count) || 40;
     }
     
-    res.json({ questions: testQuestions });
+    // Fetch all matching questions
+    let questions = await Question.find(query).lean();
+    
+    // Return questions
+    res.json({
+      subject,
+      mode,
+      questions: questions.map(q => ({
+        id: q._id,
+        text: q.questionText,
+        options: q.options,
+        correctOption: q.correctOption,
+        topicNumber: q.topicNumber,
+        explanation: q.explanation,
+        timeAllocation: q.timeAllocation || 60
+      }))
+    });
   } catch (error) {
     console.error('Error fetching test questions:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 // Process test completion and save results
-app.post('/student/complete-test', authenticateToken, async (req, res) => {
+app.post('/student/complete-test', authenticateToken, studentOnly, async (req, res) => {
   try {
-    const { 
-      testId, 
-      subject, 
-      stage, 
-      level, 
-      questions, 
-      score, 
-      timeTaken,
-      passedLevel 
-    } = req.body;
+    // Extract required fields from request body
+    const { subject, stage, level, score, questions, totalTime, passedLevel, mode, topicNumber, topics } = req.body;
+    const studentId = req.user.userId;
     
-    const studentId = req.user.id;
+    console.log('======= TEST COMPLETION =======');
+    console.log('Student ID:', studentId);
+    console.log('User in token:', req.user);
+    console.log('Subject:', subject);
+    console.log('Mode:', mode);
     
-    console.log(`Saving test results for student ${studentId}, subject ${subject}, score ${score}`);
+    if (mode === 'practice') {
+      console.log('Practice test for Topic:', topicNumber);
+    } else if (mode === 'assessment') {
+      console.log('Assessment test for Topics:', topics);
+    } else {
+      console.log('Legacy test - Stage:', stage, 'Level:', level);
+    }
     
-    // Create test history record
-    const testResult = new TestHistory({
-      studentId,
+    console.log('Score:', score);
+    console.log('Passed:', passedLevel || score >= 70);
+    
+    // Validate required fields
+    if (!subject || !questions || score === undefined || totalTime === undefined) {
+      console.error('Missing required fields in test completion request');
+      return res.status(400).json({ 
+        message: 'Missing required fields', 
+        details: { 
+          subject: !!subject, 
+          questions: !!questions, 
+          score: score !== undefined, 
+          totalTime: totalTime !== undefined 
+        } 
+      });
+    }
+    
+    // Process questions data
+    const processedQuestions = questions.map(q => ({
+      text: q.text || q.questionText || 'Question text not available',
+      selectedOption: q.selectedOption || '',
+      correctOption: q.correctOption,
+      isCorrect: q.isCorrect,
+      timeSpent: q.timeSpent || 0,
+      allocatedTime: q.allocatedTime || 60,
+      explanation: q.explanation || 'No explanation available',
+      topicNumber: q.topicNumber || q.topic || topicNumber || '',
+      questionId: q._id || null,
+      difficulty: q.difficulty || 'medium'
+    }));
+    
+    // Calculate performance metrics
+    const correctAnswers = processedQuestions.filter(q => q.isCorrect).length;
+    const incorrectAnswers = processedQuestions.filter(q => !q.isCorrect).length;
+    const unanswered = processedQuestions.length - correctAnswers - incorrectAnswers;
+    const averageTimePerQuestion = processedQuestions.length > 0 ? 
+      processedQuestions.reduce((sum, q) => sum + (q.timeSpent || 0), 0) / processedQuestions.length : 0;
+    
+    // Calculate topic-wise performance
+    const topicWisePerformance = {};
+    processedQuestions.forEach(q => {
+      const topic = q.topicNumber || '1'; // Default to '1' if no topic
+      if (!topicWisePerformance[topic]) {
+        topicWisePerformance[topic] = {
+          total: 0,
+          correct: 0,
+          score: 0
+        };
+      }
+      
+      topicWisePerformance[topic].total++;
+      if (q.isCorrect) {
+        topicWisePerformance[topic].correct++;
+      }
+    });
+    
+    // Calculate score for each topic
+    Object.keys(topicWisePerformance).forEach(topic => {
+      const { total, correct } = topicWisePerformance[topic];
+      topicWisePerformance[topic].score = total > 0 ? Math.round((correct / total) * 100) : 0;
+    });
+    
+    // Get browser and platform info if available
+    const userAgent = req.headers['user-agent'] || '';
+    const deviceInfo = {
+      browser: getBrowserInfo(userAgent),
+      platform: getPlatformInfo(userAgent),
+      screenSize: req.body.screenSize || 'unknown'
+    };
+    
+    // Calculate improvements compared to previous attempts
+    let improvement = {
+      previousBestScore: 0,
+      scoreImprovement: 0,
+      timeImprovement: 0
+    };
+    
+    try {
+      // Find previous attempts for this subject/topic
+      let query = { studentId, subject };
+      if (mode === 'practice' && topicNumber) {
+        query.topicNumber = topicNumber;
+      } else if (mode === 'assessment' && topics && topics.length > 0) {
+        // More complex query for assessment tests
+        query.testMode = 'assessment';
+      }
+      
+      const previousAttempts = await TestHistory.find(query)
+        .sort({ date: -1 })
+        .limit(5);
+      
+      if (previousAttempts && previousAttempts.length > 0) {
+        // Find previous best score
+        const previousBestScore = Math.max(...previousAttempts.map(a => a.score || 0));
+        
+        // Find previous average time
+        const previousAverageTime = previousAttempts.length > 0 ? 
+          previousAttempts.reduce((sum, a) => sum + (a.totalTime || 0), 0) / previousAttempts.length : 0;
+        
+        improvement = {
+          previousBestScore,
+          scoreImprovement: score - previousBestScore,
+          timeImprovement: previousAverageTime - totalTime
+        };
+      }
+    } catch (improvementError) {
+      console.error('Error calculating improvement metrics:', improvementError);
+      // Continue without improvement data
+    }
+    
+    let testResult;
+    
+    // Create test history entry based on mode
+    if (mode === 'practice' || mode === 'assessment') {
+      testResult = new TestHistory({
+        studentId,
+        subject,
+        score,
+        questions: processedQuestions,
+        totalTime: totalTime || 0,
+        passedLevel: passedLevel || score >= 70,
+        date: new Date(),
+        // Topic-specific data
+        testMode: mode,
+        topicNumber: mode === 'practice' ? topicNumber : undefined,
+        topics: mode === 'assessment' ? topics : undefined,
+        // Enhanced analytics fields
+        deviceInfo,
+        timingDetails: {
+          startTime: req.body.startTime ? new Date(req.body.startTime) : new Date(Date.now() - (totalTime * 60 * 1000)),
+          endTime: new Date(),
+          pauseDuration: req.body.pauseDuration || 0,
+          questionTransitionTimes: req.body.questionTransitionTimes || []
+        },
+        performanceMetrics: {
+          correctAnswers,
+          incorrectAnswers,
+          unanswered,
+          topicWisePerformance,
+          averageTimePerQuestion
+        },
+        userActions: {
+          optionChanges: req.body.optionChanges || 0,
+          reviewMarked: req.body.reviewMarked || []
+        },
+        isCompleted: true,
+        improvement
+      });
+    } else {
+      // Legacy stage-level test
+      testResult = new TestHistory({
+        studentId,
+        subject,
+        stage,
+        level,
+        score,
+        questions: processedQuestions,
+        totalTime: totalTime || 0,
+        passedLevel: passedLevel || score >= 70,
+        date: new Date(),
+        testMode: 'practice', // Default mode for backward compatibility
+        deviceInfo,
+        performanceMetrics: {
+          correctAnswers,
+          incorrectAnswers, 
+          unanswered,
+          averageTimePerQuestion
+        },
+        isCompleted: true
+      });
+    }
+    
+    // Save the test result
+    await testResult.save();
+    console.log('Test history saved successfully with ID:', testResult._id);
+    
+    // For practice tests, update topic progress
+    if (mode === 'practice' && topicNumber) {
+      try {
+        // Find student to update topic progress
+        const student = await Student.findOne({ studentId });
+        
+        if (student) {
+          // Initialize topic progress if needed
+          if (!student.topicProgress) {
+            student.topicProgress = {};
+          }
+          if (!student.topicProgress[subject]) {
+            student.topicProgress[subject] = {};
+          }
+          
+          // Get current topic data or initialize
+          const currentTopicData = student.topicProgress[subject][topicNumber] || {
+            progress: 0,
+            completed: false,
+            attemptsCount: 0
+          };
+          
+          // Update topic progress
+          student.topicProgress[subject][topicNumber] = {
+            progress: Math.max(currentTopicData.progress, score || 0),
+            completed: score >= 70 || currentTopicData.completed,
+            attemptsCount: (currentTopicData.attemptsCount || 0) + 1,
+            lastAttemptDate: new Date()
+          };
+          
+          await student.save();
+          console.log(`Updated topic progress for ${subject} topic ${topicNumber} to ${score}%`);
+        }
+      } catch (progressError) {
+        console.error('Error updating topic progress:', progressError);
+        // Continue execution even if progress update fails
+      }
+    }
+    
+    console.log('======= TEST COMPLETION FINISHED =======\n\n');
+    
+    res.status(201).json({ 
+      message: 'Test result saved successfully',
+      testId: testResult._id,
+      results: questions
+    });
+  } catch (error) {
+    console.error('Error in test completion endpoint:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
+  }
+});
+
+// Helper functions for user agent parsing
+function getBrowserInfo(userAgent) {
+  if (!userAgent) return 'unknown';
+  
+  if (userAgent.includes('Firefox')) return 'Firefox';
+  if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) return 'Chrome';
+  if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) return 'Safari';
+  if (userAgent.includes('Edg')) return 'Edge';
+  if (userAgent.includes('MSIE') || userAgent.includes('Trident/')) return 'Internet Explorer';
+  
+  return 'Other';
+}
+
+function getPlatformInfo(userAgent) {
+  if (!userAgent) return 'unknown';
+  
+  if (userAgent.includes('Windows')) return 'Windows';
+  if (userAgent.includes('Mac OS')) return 'macOS';
+  if (userAgent.includes('Linux')) return 'Linux';
+  if (userAgent.includes('Android')) return 'Android';
+  if (userAgent.includes('iOS') || userAgent.includes('iPhone') || userAgent.includes('iPad')) return 'iOS';
+  
+  return 'Other';
+}
+
+// Store test result in history
+app.post('/student/test-history', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    const { subject, stage, level, score, questions, totalTime, passedLevel } = req.body;
+    const studentId = req.user.userId;
+    
+    console.log('Received test history data:', {
       subject,
       stage,
       level,
       score,
-      questions,
-      totalTime: Math.round(timeTaken / 60), // Convert seconds to minutes
-      passedLevel: passedLevel || score >= 70, // Default passing threshold is 70%
-      date: new Date()
+      totalTime,
+      passedLevel,
+      studentId,
+      questionCount: questions?.length
     });
-    
-    await testResult.save();
-    console.log('Test history saved successfully with ID:', testResult._id);
-    
-    // Update student level if they passed
-    if (passedLevel || score >= 70) {
-      try {
-        const student = await Student.findById(studentId);
-        
-        if (!student.subjects) {
-          student.subjects = {};
-        }
-        
-        if (!student.subjects[subject]) {
-          student.subjects[subject] = { stage: '1', level: '1' };
-        }
-        
-        // Convert existing level to number, increment, then back to string
-        const currentLevel = parseInt(student.subjects[subject].level);
-        const currentStage = parseInt(student.subjects[subject].stage);
-        
-        // Only update if the completed level is the current level
-        if (
-          (stage === student.subjects[subject].stage && level === student.subjects[subject].level) ||
-          // Or if it's a higher stage/level than current
-          (parseInt(stage) > currentStage) ||
-          (parseInt(stage) === currentStage && parseInt(level) > currentLevel)
-        ) {
-          // Check if we need to move to next stage
-          if (currentLevel >= 5) {
-            student.subjects[subject].stage = (currentStage + 1).toString();
-            student.subjects[subject].level = '1';
-          } else {
-            student.subjects[subject].level = (currentLevel + 1).toString();
-          }
-          
-          await student.save();
-          console.log(`Student level updated to Stage ${student.subjects[subject].stage}, Level ${student.subjects[subject].level}`);
-        }
-      } catch (levelUpdateError) {
-        console.error('Error updating student level:', levelUpdateError);
-        // We don't want to fail the whole request if just the level update fails
-      }
-    }
-    
-    res.status(201).json({ 
-      message: 'Test result saved successfully',
-      testId: testResult._id 
-    });
-  } catch (error) {
-    console.error('Error saving test history:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
 
-// Store test result in history
-app.post('/student/test-history', authenticateToken, async (req, res) => {
-  try {
-    const { subject, stage, level, score, questions, totalTime, passedLevel } = req.body;
-    const studentId = req.user.id;
-    
+    if (!subject || !stage || !level || !questions || score === undefined || totalTime === undefined) {
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        details: {
+          subject: !subject,
+          stage: !stage,
+          level: !level,
+          questions: !questions,
+          score: score === undefined,
+          totalTime: totalTime === undefined
+        }
+      });
+    }
+
+    if (!studentId) {
+      return res.status(400).json({ 
+        message: 'Student ID not found in token',
+        error: 'Missing studentId'
+      });
+    }
+
     // Create new test history entry
     const testResult = new TestHistory({
       studentId,
@@ -885,23 +1255,104 @@ app.post('/student/test-history', authenticateToken, async (req, res) => {
       stage,
       level,
       score,
-      questions,
+      questions: questions.map(q => ({
+        text: q.text,
+        selectedOption: q.selectedOption || '',
+        correctOption: q.correctOption,
+        isCorrect: q.isCorrect,
+        timeSpent: q.timeSpent || 0,
+        allocatedTime: q.allocatedTime || 60,
+        explanation: q.explanation || 'No explanation available'
+      })),
       totalTime,
       passedLevel,
       date: new Date()
     });
     
+    console.log('Saving test result with ID:', testResult._id);
     await testResult.save();
+    console.log('Test result saved successfully');
+
+    // Update student level if they passed
+    if (passedLevel) {
+      try {
+        // Get the student from the database
+        const student = await Student.findOne({ username: req.user.username });
+        console.log('Student data before update:', student?.username, student?.subjects);
+        
+        if (!student) {
+          console.error('Student not found');
+          return;
+        }
+        
+        // Initialize subjects object if needed
+        if (!student.subjects) {
+          student.subjects = {};
+        }
+        
+        // Normalize subject name to lowercase for consistency
+        const subjectKey = subject.toLowerCase();
+        console.log('Processing subject:', subjectKey);
+        
+        // Initialize subject if it doesn't exist
+        if (!student.subjects[subjectKey]) {
+          console.log(`Creating new subject entry for ${subjectKey}`);
+          student.subjects[subjectKey] = { stage: '1', level: '1' };
+        }
+        
+        // DIRECT APPROACH: Simply increment the level by 1 when a test is passed
+        let currentLevel = parseInt(student.subjects[subjectKey].level) || 1;
+        let currentStage = parseInt(student.subjects[subjectKey].stage) || 1;
+        
+        console.log(`Current ${subjectKey} progress - Stage: ${currentStage}, Level: ${currentLevel}`);
+        
+        // Increment level
+        currentLevel += 1;
+        
+        // If level exceeds 4, move to next stage
+        if (currentLevel > 4) {
+          currentLevel = 1;
+          currentStage += 1;
+        }
+        
+        // Update the student record
+        student.subjects[subjectKey].level = currentLevel.toString();
+        student.subjects[subjectKey].stage = currentStage.toString();
+        
+        // Save the updated student record
+        await student.save();
+        
+        console.log(`LEVEL UPDATED: ${subjectKey} - New Stage: ${currentStage}, New Level: ${currentLevel}`);
+      } catch (error) {
+        console.error('Error updating student level:', error);
+      }
+    }
     
-    res.status(201).json({ message: 'Test result saved successfully' });
+    // Return the created test history object
+    res.status(201).json({
+      _id: testResult._id,
+      studentId: testResult.studentId,
+      subject: testResult.subject,
+      stage: testResult.stage,
+      level: testResult.level,
+      score: testResult.score,
+      questions: testResult.questions,
+      totalTime: testResult.totalTime,
+      passedLevel: testResult.passedLevel,
+      date: testResult.date
+    });
   } catch (error) {
     console.error('Error saving test history:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Failed to save test results',
+      error: error.message,
+      details: error.stack
+    });
   }
 });
 
 // Get test history for a student
-app.get('/student/test-history', authenticateToken, async (req, res) => {
+app.get('/student/test-history', authenticateToken, studentOnly, async (req, res) => {
   try {
     const { subject, stage, level } = req.query;
     const studentId = req.user.id;
@@ -954,37 +1405,134 @@ app.get('/student/test-history', authenticateToken, async (req, res) => {
 });
 
 // Get all test history for a student as a raw array
-app.get('/student/all-test-history', authenticateToken, async (req, res) => {
+app.get('/student/all-test-history', authenticateToken, studentOnly, async (req, res) => {
   try {
-    const studentId = req.user.id;
+    const studentId = req.user.userId || req.user.id;
+    const { batchSize = 20, page = 1, includeDetails = false } = req.query;
     
-    // Fetch all test history for the student
-    const testHistory = await TestHistory.find({ studentId })
-      .sort({ date: -1 }) // Sort by date descending (newest first)
-      .lean();
+    // For caching and optimization
+    const cacheKey = `test_history_${studentId}_${page}_${batchSize}_${includeDetails}`;
+    const cacheTime = 5 * 60 * 1000; // 5 minutes in milliseconds
+    const cachedData = req.app.locals.testHistoryCache?.[cacheKey];
     
-    // Transform each test for the history table format
+    // Check if we have cached data and it's still valid
+    if (cachedData && (Date.now() - cachedData.timestamp < cacheTime)) {
+      console.log(`Using cached test history for student ${studentId}`);
+      return res.json(cachedData.data);
+    }
+    
+    console.log(`Fetching test history for student ${studentId}, page ${page}, batchSize ${batchSize}`);
+    
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(batchSize);
+    const limit = parseInt(batchSize);
+    
+    // Create the base query
+    let query = TestHistory.find({ studentId })
+      .sort({ date: -1 }); // Sort by date descending (newest first)
+    
+    // Get total count for pagination info
+    const totalCount = await TestHistory.countDocuments({ studentId });
+    
+    // Apply pagination
+    query = query.skip(skip).limit(limit);
+    
+    // Execute the query
+    const testHistory = await query.lean();
+    
+    // Transform each test for the history table format with enhanced details
     const formattedTests = testHistory.map(test => {
-      return {
+      const correctAnswers = test.questions?.filter(q => q.isCorrect)?.length || 0;
+      const totalQuestions = test.questions?.length || 0;
+      
+      // Base test data
+      const formattedTest = {
         _id: test._id,
-        subject: getSubjectName(test.subject),
+        subject: test.subject,
+        subjectName: getSubjectName(test.subject),
         stage: test.stage,
         level: test.level,
         score: test.score,
-        totalQuestions: test.questions.length,
-        correctAnswers: test.questions.filter(q => q.isCorrect).length,
-        timeTaken: test.totalTime * 60, // Convert minutes to seconds
+        totalQuestions: totalQuestions,
+        correctAnswers: correctAnswers,
+        totalTime: test.totalTime || 0, // in minutes
         passedLevel: test.passedLevel,
-        startTime: test.date,
-        endTime: new Date(new Date(test.date).getTime() + test.totalTime * 60 * 1000).toISOString(),
-        date: test.date
+        date: test.date,
+        mode: test.testMode || 'practice',
+        topicNumber: test.topicNumber,
+        topics: test.topics,
+        
+        // Performance metrics
+        performanceMetrics: {
+          correctAnswers: test.performanceMetrics?.correctAnswers || correctAnswers,
+          incorrectAnswers: test.performanceMetrics?.incorrectAnswers || (totalQuestions - correctAnswers),
+          unanswered: test.performanceMetrics?.unanswered || 0,
+          averageTimePerQuestion: test.performanceMetrics?.averageTimePerQuestion || 
+            (test.totalTime ? test.totalTime / totalQuestions : 0)
+        }
       };
+      
+      // Add device info if available
+      if (test.deviceInfo) {
+        formattedTest.deviceInfo = test.deviceInfo;
+      }
+      
+      // Add timing details if available
+      if (test.timingDetails) {
+        formattedTest.timingDetails = test.timingDetails;
+      }
+      
+      // Add improvement metrics if available
+      if (test.improvement) {
+        formattedTest.improvement = test.improvement;
+      }
+      
+      // Add detailed questions only if requested
+      if (includeDetails === 'true' || includeDetails === true) {
+        formattedTest.questions = test.questions.map(q => ({
+          text: q.text || q.questionText,
+          selectedOption: q.selectedOption,
+          correctOption: q.correctOption,
+          isCorrect: q.isCorrect,
+          timeSpent: q.timeSpent || 0,
+          allocatedTime: q.allocatedTime || 60,
+          // Include explanation only if available and in a summarized form
+          explanation: q.explanation && typeof q.explanation === 'string' && q.explanation.length > 100 
+            ? q.explanation.substring(0, 100) + '...' 
+            : (q.explanation || 'No explanation available')
+        }));
+      }
+      
+      return formattedTest;
     });
     
+    // Create response object with pagination info
+    const response = {
+      tests: formattedTests,
+      pagination: {
+        total: totalCount,
+        page: parseInt(page),
+        pageSize: parseInt(batchSize),
+        totalPages: Math.ceil(totalCount / parseInt(batchSize))
+      }
+    };
+    
+    // Initialize cache if needed
+    if (!req.app.locals.testHistoryCache) {
+      req.app.locals.testHistoryCache = {};
+    }
+    
+    // Cache the response
+    req.app.locals.testHistoryCache[cacheKey] = {
+      data: formattedTests, // Only cache the test data, not the pagination info
+      timestamp: Date.now()
+    };
+    
+    // For backward compatibility, just return the array
     res.json(formattedTests);
   } catch (error) {
     console.error('Error fetching all test history:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
@@ -993,32 +1541,15 @@ function getSubjectName(subjectId) {
   const subjects = {
     physics: 'Physics',
     chemistry: 'Chemistry',
-    botany: 'Botany',
-    zoology: 'Zoology'
+    biology: 'Biology'
   };
   
   return subjects[subjectId] || subjectId;
 }
 
-// Debug route to check available users (remove in production)
-app.get('/debug/users', async (req, res) => {
-  try {
-    const users = await User.find({}, { password: 0 }); // Exclude passwords
-    res.json(users);
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
 // Image upload endpoint for questions
-app.post('/admin/upload-image', authenticateToken, upload.single('image'), async (req, res) => {
+app.post('/admin/upload-image', authenticateToken, adminOnly, upload.single('image'), async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
     }
@@ -1042,13 +1573,8 @@ app.post('/admin/upload-image', authenticateToken, upload.single('image'), async
 });
 
 // Calculate N.POINTS and update all students
-app.post('/admin/update-points', authenticateToken, async (req, res) => {
+app.post('/admin/update-points', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
     // Get all students
     const students = await Student.find();
     let updated = 0;
@@ -1071,15 +1597,9 @@ app.post('/admin/update-points', authenticateToken, async (req, res) => {
           totalPoints += level * 25;
         }
         
-        // Botany points
-        if (student.subjects.botany) {
-          const level = parseInt(student.subjects.botany.level) || 1;
-          totalPoints += level * 25;
-        }
-        
-        // Zoology points
-        if (student.subjects.zoology) {
-          const level = parseInt(student.subjects.zoology.level) || 1;
+        // Biology points
+        if (student.subjects.biology) {
+          const level = parseInt(student.subjects.biology.level) || 1;
           totalPoints += level * 25;
         }
       }
@@ -1104,13 +1624,8 @@ app.post('/admin/update-points', authenticateToken, async (req, res) => {
 });
 
 // Admin endpoint to get leaderboard data
-app.get('/admin/leaderboard', authenticateToken, async (req, res) => {
+app.get('/admin/leaderboard', authenticateToken, adminOnly, async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-
     // Get all students with relevant fields for leaderboard
     const students = await Student.find({}, {
       studentId: 1,
@@ -1127,7 +1642,7 @@ app.get('/admin/leaderboard', authenticateToken, async (req, res) => {
 });
 
 // Student endpoint to get leaderboard data
-app.get('/student/leaderboard', authenticateToken, async (req, res) => {
+app.get('/student/leaderboard', authenticateToken, studentOnly, async (req, res) => {
   try {
     // Get all students with relevant fields for leaderboard
     const students = await Student.find({}, {
@@ -1141,20 +1656,18 @@ app.get('/student/leaderboard', authenticateToken, async (req, res) => {
       let totalLevelsCleared = 0;
       
       if (student.subjects) {
-        const { physics, chemistry, botany, zoology } = student.subjects;
+        const subjects = student.subjects;
         
         // Convert level strings to numbers and subtract 1 (since level 1 means 0 levels cleared)
-        const physicsLevel = parseInt(physics.level || '1') - 1;
-        const chemistryLevel = parseInt(chemistry.level || '1') - 1;
-        const botanyLevel = parseInt(botany.level || '1') - 1;
-        const zoologyLevel = parseInt(zoology.level || '1') - 1;
+        const physicsLevel = parseInt(subjects.physics?.level || '1') - 1;
+        const chemistryLevel = parseInt(subjects.chemistry?.level || '1') - 1;
+        const biologyLevel = parseInt(subjects.biology?.level || '1') - 1;
         
         // Sum up the levels cleared (ensure they're not negative)
         totalLevelsCleared = 
           Math.max(0, physicsLevel) + 
           Math.max(0, chemistryLevel) + 
-          Math.max(0, botanyLevel) + 
-          Math.max(0, zoologyLevel);
+          Math.max(0, biologyLevel);
       }
       
       // Calculate N.POINTS (25 points per level cleared)
@@ -1180,12 +1693,8 @@ app.get('/student/leaderboard', authenticateToken, async (req, res) => {
 });
 
 // Get all students with N.POINTS calculation
-app.get('/admin/students/points', authenticateToken, async (req, res) => {
+app.get('/admin/students/points', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
     const students = await Student.find({}, '-password').lean();
     
     // Calculate N.POINTS for each student
@@ -1193,20 +1702,18 @@ app.get('/admin/students/points', authenticateToken, async (req, res) => {
       let totalLevelsCleared = 0;
       
       if (student.subjects) {
-        const { physics, chemistry, botany, zoology } = student.subjects;
+        const subjects = student.subjects;
         
         // Convert level strings to numbers and subtract 1 (since level 1 means 0 levels cleared)
-        const physicsLevel = parseInt(physics.level) - 1;
-        const chemistryLevel = parseInt(chemistry.level) - 1;
-        const botanyLevel = parseInt(botany.level) - 1;
-        const zoologyLevel = parseInt(zoology.level) - 1;
+        const physicsLevel = parseInt(subjects.physics?.level || '1') - 1;
+        const chemistryLevel = parseInt(subjects.chemistry?.level || '1') - 1;
+        const biologyLevel = parseInt(subjects.biology?.level || '1') - 1;
         
         // Sum up the levels cleared (ensure they're not negative)
         totalLevelsCleared = 
           Math.max(0, physicsLevel) + 
           Math.max(0, chemistryLevel) + 
-          Math.max(0, botanyLevel) + 
-          Math.max(0, zoologyLevel);
+          Math.max(0, biologyLevel);
       }
       
       // Calculate N.POINTS (25 points per level cleared)
@@ -1219,13 +1726,10 @@ app.get('/admin/students/points', authenticateToken, async (req, res) => {
       };
     });
     
-    // Sort students by N.POINTS in descending order
-    studentsWithPoints.sort((a, b) => b.nPoints - a.nPoints);
-    
     res.json(studentsWithPoints);
   } catch (error) {
     console.error('Error fetching students with points:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
@@ -1265,7 +1769,7 @@ app.post('/api/echo', (req, res) => {
 });
 
 // New endpoint for backward compatibility
-app.post('/student/test/submit', authenticateToken, async (req, res) => {
+app.post('/student/test/submit', authenticateToken, studentOnly, async (req, res) => {
   try {
     // Forward to the new endpoint
     const { 
@@ -1315,12 +1819,8 @@ app.post('/student/test/submit', authenticateToken, async (req, res) => {
 });
 
 // Get all unique institutions
-app.get('/admin/institutions', authenticateToken, async (req, res) => {
+app.get('/admin/institutions', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-    
     // Find all unique institution values
     const institutions = await Student.distinct('institution');
     
@@ -1332,12 +1832,8 @@ app.get('/admin/institutions', authenticateToken, async (req, res) => {
 });
 
 // Get students by institution
-app.get('/admin/students/institution/:institution', authenticateToken, async (req, res) => {
+app.get('/admin/students/institution/:institution', authenticateToken, adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-    
     const { institution } = req.params;
     
     // Find all students from a specific institution
@@ -1346,6 +1842,482 @@ app.get('/admin/students/institution/:institution', authenticateToken, async (re
     res.status(200).json(students);
   } catch (error) {
     console.error('Error fetching students by institution:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get test history for a specific test
+app.get('/student/test-history/:testId', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    const testId = req.params.testId;
+    console.log('Fetching test history for ID:', testId);
+    
+    const testHistory = await TestHistory.findById(testId);
+    
+    if (!testHistory) {
+      console.log('Test history not found for ID:', testId);
+      return res.status(404).json({ message: 'Test history not found' });
+    }
+
+    console.log('Found test history:', {
+      id: testHistory._id,
+      subject: testHistory.subject,
+      score: testHistory.score,
+      questionsCount: testHistory.questions.length,
+      hasExplanations: testHistory.questions.some(q => q.explanation)
+    });
+
+    // For debugging, log a few explanations
+    console.log('Sample explanations:');
+    testHistory.questions.slice(0, 3).forEach((q, i) => {
+      console.log(`Question ${i+1} explanation: "${q.explanation || 'None'}" (${typeof q.explanation})`);
+    });
+    
+    // Process explanations to ensure they're properly formatted
+    const processedQuestions = testHistory.questions.map(q => {
+      // Ensure explanation is a valid string
+      let explanation = "No explanation available for this question.";
+      if (q.explanation && typeof q.explanation === 'string' && q.explanation.trim() !== '' && 
+          q.explanation !== 'undefined' && q.explanation !== 'null') {
+        explanation = q.explanation;
+      }
+      
+      return {
+        text: q.text,
+        selectedOption: q.selectedOption,
+        correctOption: q.correctOption,
+        isCorrect: q.isCorrect,
+        timeSpent: q.timeSpent,
+        allocatedTime: q.allocatedTime || 60,
+        explanation: explanation
+      };
+    });
+
+    // Return the test history with processed explanations
+    res.json({
+      _id: testHistory._id,
+      subject: testHistory.subject,
+      stage: testHistory.stage,
+      level: testHistory.level,
+      score: testHistory.score,
+      totalTime: testHistory.totalTime,
+      passedLevel: testHistory.passedLevel,
+      questions: processedQuestions,
+      date: testHistory.date
+    });
+  } catch (error) {
+    console.error('Error fetching test history:', error);
+    res.status(500).json({ 
+      message: 'Server error',
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// Simple test-completion level update - most direct approach for level updates
+app.post('/student/test-completion-level-update', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    console.log('\n\n======= SIMPLE TEST COMPLETION LEVEL UPDATE =======');
+    console.log('User token data:', req.user);
+    console.log('Request body:', req.body);
+    
+    const { subject, currentLevel, currentStage, testId } = req.body;
+    
+    if (!subject) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Missing subject name' 
+      });
+    }
+    
+    // Get student ID from token
+    const studentId = req.user.userId;
+    const username = req.user.username;
+    
+    if (!studentId) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Student ID not found in token' 
+      });
+    }
+    
+    console.log('Finding student with ID:', studentId, 'Username:', username);
+    
+    // Find student document using multiple methods to ensure success
+    let student = null;
+    
+    // Try methods sequentially until one works
+    
+    // Method 1: Find by ID
+    try {
+      student = await Student.findById(studentId);
+      if (student) {
+        console.log('Found student by ID');
+      }
+    } catch (idError) {
+      console.error('Error finding student by ID:', idError.message);
+    }
+    
+    // Method 2: Find by username
+    if (!student && username) {
+      try {
+        student = await Student.findOne({ username: username });
+        if (student) {
+          console.log('Found student by username');
+        }
+      } catch (usernameError) {
+        console.error('Error finding student by username:', usernameError.message);
+      }
+    }
+    
+    // Method 3: Use direct MongoDB query
+    if (!student) {
+      try {
+        const db = mongoose.connection.db;
+        const studentsCollection = db.collection('students');
+        
+        // Find with any field that might match
+        const queryConditions = [];
+        
+        if (mongoose.Types.ObjectId.isValid(studentId)) {
+          queryConditions.push({ _id: new mongoose.Types.ObjectId(studentId) });
+        }
+        
+        if (username) {
+          queryConditions.push({ username: username });
+        }
+        
+        const rawStudent = await studentsCollection.findOne({ $or: queryConditions });
+        
+        if (rawStudent) {
+          console.log('Found student via direct MongoDB query');
+          student = rawStudent;
+        }
+      } catch (directError) {
+        console.error('Error with direct MongoDB query:', directError.message);
+      }
+    }
+    
+    if (!student) {
+      console.error('Student not found with ID:', studentId, 'or username:', username);
+      return res.status(404).json({ 
+        success: false,
+        message: 'Student not found' 
+      });
+    }
+    
+    console.log('Found student:', student.name || student.username);
+    
+    // Ensure subjects object exists
+    if (!student.subjects) {
+      student.subjects = {};
+    }
+    
+    // Normalize subject name
+    const subjectKey = subject.toLowerCase();
+    const capitalizedKey = subjectKey.charAt(0).toUpperCase() + subjectKey.slice(1);
+    
+    // Get current level info (or initialize if not set)
+    if (!student.subjects[subjectKey]) {
+      student.subjects[subjectKey] = { level: '1', stage: '1' };
+    }
+    
+    // Read the current level from the database (don't trust the client input)
+    const dbLevel = parseInt(student.subjects[subjectKey]?.level || 1);
+    const dbStage = parseInt(student.subjects[subjectKey]?.stage || 1);
+    
+    console.log('Current level in database:', dbLevel);
+    console.log('Current stage in database:', dbStage);
+    
+    // Calculate new level
+    let newLevel = dbLevel + 1;
+    let newStage = dbStage;
+    
+    // If level exceeds 4, move to next stage
+    if (newLevel > 4) {
+      newLevel = 1;
+      newStage += 1;
+    }
+    
+    console.log(`Updating ${subject} from Level ${dbLevel}, Stage ${dbStage} to Level ${newLevel}, Stage ${newStage}`);
+    
+    try {
+      // Use reliable direct MongoDB update to avoid schema validation issues
+      const db = mongoose.connection.db;
+      const result = await db.collection('students').updateOne(
+        { _id: student._id },
+        { 
+          $set: { 
+            [`subjects.${subjectKey}`]: {
+              level: newLevel.toString(),
+              stage: newStage.toString()
+            },
+            [`subjects.${capitalizedKey}`]: {
+              level: newLevel.toString(),
+              stage: newStage.toString()
+            } 
+          } 
+        }
+      );
+      
+      console.log('Direct MongoDB update result:', result.modifiedCount, 'documents modified');
+      
+      if (result.modifiedCount === 0) {
+        // If direct update failed, try mongoose save as fallback
+        if (student.save) {
+          // Update both lowercase and capitalized versions
+          student.subjects[subjectKey] = {
+            level: newLevel.toString(),
+            stage: newStage.toString()
+          };
+          
+          student.subjects[capitalizedKey] = {
+            level: newLevel.toString(),
+            stage: newStage.toString()
+          };
+          
+          await student.save();
+          console.log('Level update successful with mongoose save!');
+        } else {
+          throw new Error('Both direct update and mongoose save failed');
+        }
+      }
+    } catch (updateError) {
+      console.error('Error updating student:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Error updating level',
+        error: updateError.message
+      });
+    }
+    
+    console.log('Level update successful!');
+    console.log('Updated subjects:', JSON.stringify(student.subjects, null, 2));
+    console.log('======= SIMPLE LEVEL UPDATE COMPLETE =======\n\n');
+    
+    res.status(200).json({
+      success: true,
+      message: 'Level updated successfully',
+      subject: subjectKey,
+      oldLevel: dbLevel,
+      oldStage: dbStage,
+      newLevel: newLevel,
+      newStage: newStage
+    });
+    
+  } catch (error) {
+    console.error('Error in simple test completion level update:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating level',
+      error: error.message
+    });
+  }
+});
+
+// Direct level update endpoint for students with high scores (90%+)
+app.post('/student/update-level', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    console.log('\n\n======= DIRECT LEVEL UPDATE REQUEST =======');
+    console.log('User:', req.user);
+    console.log('Request body:', req.body);
+    
+    const { subject, newLevel, newStage, testId } = req.body;
+    
+    if (!subject || !newLevel || !newStage) {
+      console.error('Missing required fields:', { subject, newLevel, newStage });
+      return res.status(400).json({
+        message: 'Missing required fields (subject, newLevel, newStage)',
+        received: req.body
+      });
+    }
+    
+    // Find the student using username from the token
+    const username = req.user.username;
+    console.log('Looking for student with username:', username);
+    
+    let student = await Student.findOne({ username: username });
+    if (!student) {
+      console.error('Student not found with username:', username);
+      
+      // Try secondary lookup by ID
+      const studentId = req.user.userId || req.user.id;
+      console.log('Trying to find by ID instead:', studentId);
+      
+      if (!studentId) {
+        console.error('No student ID available in the token');
+        return res.status(404).json({ message: 'Student ID not found in token' });
+      }
+      
+      student = await Student.findById(studentId);
+      if (!student) {
+        console.error('Student also not found by ID');
+        
+        // Emergency fallback - try looking up by email
+        if (req.user.email) {
+          console.log('Trying emergency lookup by email:', req.user.email);
+          student = await Student.findOne({ email: req.user.email });
+          
+          if (!student) {
+            console.error('Student not found by email either');
+            return res.status(404).json({ message: 'Student not found by any identifier' });
+          }
+          console.log('Found student by email');
+        } else {
+          return res.status(404).json({ message: 'Student not found' });
+        }
+      } else {
+        console.log('Student found by ID');
+      }
+    }
+    
+    console.log('Found student:', student.name || student.username);
+    console.log('Current subjects:', JSON.stringify(student.subjects, null, 2));
+    
+    // Normalize subject
+    const normalizedSubject = subject.toLowerCase();
+    console.log('Normalized subject:', normalizedSubject);
+    
+    // Initialize subjects if needed
+    if (!student.subjects) {
+      student.subjects = {};
+    }
+    
+    // Update level and stage
+    // If the subject doesn't exist yet, create it
+    if (!student.subjects[normalizedSubject]) {
+      student.subjects[normalizedSubject] = {
+        level: '1',
+        stage: '1'
+      };
+    }
+    
+    // Update values
+    student.subjects[normalizedSubject] = {
+      level: newLevel,
+      stage: newStage
+    };
+    
+    // Also update capitalized version if it exists
+    const capitalizedSubject = normalizedSubject.charAt(0).toUpperCase() + normalizedSubject.slice(1);
+    student.subjects[capitalizedSubject] = {
+      level: newLevel,
+      stage: newStage
+    };
+    
+    console.log('Updated subjects (before save):', JSON.stringify(student.subjects, null, 2));
+    
+    // Save changes to database
+    await student.save();
+    
+    console.log('Student data saved successfully');
+    console.log('Final subjects after save:', JSON.stringify(student.subjects, null, 2));
+    console.log('======= LEVEL UPDATE COMPLETE =======\n\n');
+    
+    // Return success response
+    res.status(200).json({
+      message: 'Level updated successfully',
+      subject: normalizedSubject,
+      level: newLevel,
+      stage: newStage
+    });
+  } catch (error) {
+    console.error('Error in direct level update:', error);
+    res.status(500).json({
+      message: 'Failed to update level',
+      error: error.message
+    });
+  }
+});
+
+// Student endpoint to get topic progress
+app.get('/student/topic-progress', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    // Get student ID from token
+    const studentId = req.user.studentId;
+    
+    // Find the student
+    const student = await Student.findOne({ studentId });
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+    
+    // Get topic progress from student document or initialize if not present
+    let topicProgress = student.topicProgress || {};
+    
+    // If no progress yet, initialize with empty objects for each subject
+    if (Object.keys(topicProgress).length === 0) {
+      topicProgress = {
+        'physics': {},
+        'chemistry': {},
+        'biology': {}
+      };
+    }
+    
+    res.json(topicProgress);
+  } catch (error) {
+    console.error('Error fetching topic progress:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update topic progress after test completion
+app.post('/student/update-topic-progress', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    const { subject, topicNumber, progress, completed, duration } = req.body;
+    
+    // Validate required fields
+    if (!subject || !topicNumber) {
+      return res.status(400).json({ message: 'Subject and topic number are required' });
+    }
+    
+    // Get student from token
+    const studentId = req.user.studentId;
+    const student = await Student.findOne({ studentId });
+    
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+    
+    // Initialize topicProgress if not present
+    if (!student.topicProgress) {
+      student.topicProgress = {
+        'physics': {},
+        'chemistry': {},
+        'biology': {}
+      };
+    }
+    
+    // Initialize subject if not present
+    if (!student.topicProgress[subject]) {
+      student.topicProgress[subject] = {};
+    }
+    
+    // Get current topic data or initialize
+    const currentTopicData = student.topicProgress[subject][topicNumber] || {
+      progress: 0,
+      completed: false,
+      attemptsCount: 0
+    };
+    
+    // Update topic progress
+    student.topicProgress[subject][topicNumber] = {
+      progress: Math.max(currentTopicData.progress, progress || 0),
+      completed: completed || currentTopicData.completed,
+      attemptsCount: (currentTopicData.attemptsCount || 0) + 1,
+      lastAttemptDate: new Date()
+    };
+    
+    // Save student
+    await student.save();
+    
+    res.status(200).json({
+      message: 'Topic progress updated successfully',
+      topicProgress: student.topicProgress[subject][topicNumber]
+    });
+  } catch (error) {
+    console.error('Error updating topic progress:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
