@@ -147,10 +147,12 @@ const createTestStudent = async () => {
 const Student = require('./models/Student');
 // Import Question model
 const Question = require('./models/Question');
+// Import Grammar Question model
+const GrammarQuestion = require('./models/GrammarQuestion');
 
 // Test History Schema
 const testHistorySchema = new mongoose.Schema({
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   subject: { type: String, required: true },
   stage: { type: String, default: '1' }, // Legacy field, keep for backward compatibility
   level: { type: String, default: '1' }, // Legacy field, keep for backward compatibility
@@ -869,6 +871,313 @@ app.delete('/admin/questions/:id', authenticateToken, adminOnly, async (req, res
   }
 });
 
+// =====================================================
+// GRAMMAR QUESTION ROUTES
+// =====================================================
+
+// Get all grammar questions with filtering (Admin only)
+app.get('/admin/grammar-questions', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { module, topicNumber } = req.query;
+    console.log('Fetching grammar questions with filters:', { module, topicNumber });
+    
+    let query = {};
+    
+    if (module) {
+      query.module = module;
+    }
+    
+    if (topicNumber) {
+      query.topicNumber = topicNumber;
+    }
+    
+    const questions = await GrammarQuestion.find(query).sort({ createdAt: -1 });
+    console.log(`Found ${questions.length} grammar questions`);
+    
+    res.json(questions);
+  } catch (error) {
+    console.error('Error fetching grammar questions:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get grammar questions for students (for tests)
+app.get('/grammar-questions', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    const { module, topicNumber } = req.query;
+    console.log('Student fetching grammar questions:', { module, topicNumber });
+    
+    if (!module) {
+      return res.status(400).json({ message: 'Module is required' });
+    }
+    
+    let query = { module };
+    
+    if (topicNumber) {
+      query.topicNumber = topicNumber;
+    }
+    
+    const questions = await GrammarQuestion.find(query).lean();
+    console.log(`Found ${questions.length} grammar questions for module: ${module}`);
+    
+    res.json(questions);
+  } catch (error) {
+    console.error('Error fetching grammar questions for student:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Create a new grammar question (Admin only)
+app.post('/admin/grammar-questions', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    console.log('=== GRAMMAR QUESTION CREATION DEBUG ===');
+    console.log('MongoDB connection state:', mongoose.connection.readyState);
+    console.log('Connection states: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting');
+    console.log('Creating new grammar question with data:', JSON.stringify(req.body, null, 2));
+    
+    // Check if database is connected
+    if (mongoose.connection.readyState !== 1) {
+      console.error('Database not connected! Current state:', mongoose.connection.readyState);
+      return res.status(500).json({ 
+        message: 'Database connection error. Please try again.',
+        connectionState: mongoose.connection.readyState
+      });
+    }
+    
+    const {
+      module,
+      topicNumber,
+      questionText,
+      options,
+      correctOption,
+      explanation,
+      difficulty,
+      timeAllocation,
+      imageUrl,
+      grammarRule,
+      category
+    } = req.body;
+    
+    console.log('Extracted fields:', {
+      module,
+      topicNumber,
+      questionText: questionText ? questionText.substring(0, 50) + '...' : 'undefined',
+      options: options ? `Array of ${options.length} items` : 'undefined',
+      correctOption,
+      explanation: explanation ? 'provided' : 'not provided',
+      difficulty,
+      timeAllocation,
+      imageUrl: imageUrl ? 'provided' : 'not provided',
+      grammarRule: grammarRule ? 'provided' : 'not provided',
+      category
+    });
+    
+    // Validate required fields
+    if (!module || !topicNumber || !questionText || !options || correctOption === undefined) {
+      console.error('Validation failed - missing required fields:', {
+        module: !!module,
+        topicNumber: !!topicNumber,
+        questionText: !!questionText,
+        options: !!options,
+        correctOption: correctOption !== undefined
+      });
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        details: { 
+          module: !!module, 
+          topicNumber: !!topicNumber, 
+          questionText: !!questionText, 
+          options: !!options, 
+          correctOption: correctOption !== undefined 
+        }
+      });
+    }
+    
+    // Validate options array
+    if (!Array.isArray(options) || options.length !== 4) {
+      console.error('Options validation failed:', {
+        isArray: Array.isArray(options),
+        length: options ? options.length : 'N/A'
+      });
+      return res.status(400).json({ message: 'Options must be an array of 4 items' });
+    }
+    
+    // Check if any option is empty
+    const emptyOptions = options.filter(opt => !opt || opt.trim() === '');
+    if (emptyOptions.length > 0) {
+      console.error('Empty options found:', emptyOptions.length);
+      return res.status(400).json({ message: 'All options must be filled' });
+    }
+    
+    // Validate correct option index
+    if (correctOption < 0 || correctOption >= options.length) {
+      console.error('Invalid correct option index:', correctOption, 'Options length:', options.length);
+      return res.status(400).json({ message: 'Correct option index is invalid' });
+    }
+    
+    // Validate module enum
+    const validModules = ['beginner', 'basic', 'intermediate', 'advanced'];
+    if (!validModules.includes(module)) {
+      console.error('Invalid module:', module, 'Valid modules:', validModules);
+      return res.status(400).json({ message: 'Invalid module. Must be one of: ' + validModules.join(', ') });
+    }
+    
+    // Validate difficulty enum
+    const validDifficulties = ['easy', 'medium', 'hard'];
+    const finalDifficulty = difficulty || 'medium';
+    if (!validDifficulties.includes(finalDifficulty)) {
+      console.error('Invalid difficulty:', finalDifficulty, 'Valid difficulties:', validDifficulties);
+      return res.status(400).json({ message: 'Invalid difficulty. Must be one of: ' + validDifficulties.join(', ') });
+    }
+    
+    // Validate category enum
+    const validCategories = ['tenses', 'articles', 'prepositions', 'modal-verbs', 'conditionals', 'passive-voice', 'reported-speech', 'relative-clauses', 'conjunctions', 'phrasal-verbs', 'others'];
+    const finalCategory = category || 'others';
+    if (!validCategories.includes(finalCategory)) {
+      console.error('Invalid category:', finalCategory, 'Valid categories:', validCategories);
+      return res.status(400).json({ message: 'Invalid category. Must be one of: ' + validCategories.join(', ') });
+    }
+    
+    console.log('All validations passed. Creating question object...');
+    
+    const questionData = {
+      module,
+      topicNumber: topicNumber.toString(),
+      questionText: questionText.trim(),
+      options: options.map(opt => opt.trim()),
+      correctOption: parseInt(correctOption),
+      explanation: (explanation || '').trim(),
+      difficulty: finalDifficulty,
+      timeAllocation: parseInt(timeAllocation) || 60,
+      imageUrl: (imageUrl || '').trim(),
+      grammarRule: (grammarRule || '').trim(),
+      category: finalCategory
+    };
+    
+    console.log('Final question data:', JSON.stringify(questionData, null, 2));
+    
+    // Test if GrammarQuestion model is available
+    if (!GrammarQuestion) {
+      console.error('GrammarQuestion model is not available!');
+      return res.status(500).json({ message: 'Grammar question model not loaded' });
+    }
+    
+    console.log('Creating new GrammarQuestion instance...');
+    const newQuestion = new GrammarQuestion(questionData);
+    
+    console.log('Validating question before save...');
+    const validationError = newQuestion.validateSync();
+    if (validationError) {
+      console.error('Validation error:', validationError);
+      return res.status(400).json({ 
+        message: 'Validation error', 
+        details: validationError.message 
+      });
+    }
+    
+    console.log('Attempting to save to database...');
+    const savedQuestion = await newQuestion.save();
+    console.log('Grammar question created successfully with ID:', savedQuestion._id);
+    
+    res.status(201).json(savedQuestion);
+  } catch (error) {
+    console.error('=== ERROR SAVING GRAMMAR QUESTION ===');
+    console.error('Error type:', error.constructor.name);
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    
+    // Check for specific error types
+    if (error.name === 'ValidationError') {
+      console.error('Mongoose validation error details:', error.errors);
+      return res.status(400).json({ 
+        message: 'Validation error', 
+        error: error.message,
+        details: error.errors
+      });
+    }
+    
+    if (error.name === 'MongoError' || error.name === 'MongooseError') {
+      console.error('MongoDB/Mongoose error:', error);
+      return res.status(500).json({ 
+        message: 'Database error. Please check connection.', 
+        error: error.message 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Server error creating grammar question', 
+      error: error.message,
+      type: error.constructor.name
+    });
+  }
+});
+
+// Update a grammar question (Admin only)
+app.put('/admin/grammar-questions/:id', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    console.log('Updating grammar question:', req.params.id);
+    
+    const {
+      module,
+      topicNumber,
+      questionText,
+      options,
+      correctOption,
+      explanation,
+      difficulty,
+      timeAllocation,
+      imageUrl,
+      grammarRule,
+      category
+    } = req.body;
+    
+    const updatedQuestion = await GrammarQuestion.findByIdAndUpdate(
+      req.params.id,
+      {
+        module,
+        topicNumber,
+        questionText,
+        options,
+        correctOption,
+        explanation,
+        difficulty,
+        timeAllocation,
+        imageUrl,
+        grammarRule,
+        category
+      },
+      { new: true, runValidators: true }
+    );
+    
+    if (!updatedQuestion) {
+      return res.status(404).json({ message: 'Grammar question not found' });
+    }
+    
+    console.log('Grammar question updated successfully:', updatedQuestion._id);
+    res.json(updatedQuestion);
+  } catch (error) {
+    console.error('Error updating grammar question:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete a grammar question (Admin only)
+app.delete('/admin/grammar-questions/:id', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const deletedQuestion = await GrammarQuestion.findByIdAndDelete(req.params.id);
+    
+    if (!deletedQuestion) {
+      return res.status(404).json({ message: 'Grammar question not found' });
+    }
+    
+    console.log('Grammar question deleted successfully:', req.params.id);
+    res.json({ message: 'Grammar question deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting grammar question:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Student endpoint to get topic-based test questions
 app.get('/student/test', authenticateToken, studentOnly, async (req, res) => {
   try {
@@ -1404,28 +1713,158 @@ app.get('/student/test-history', authenticateToken, studentOnly, async (req, res
   }
 });
 
+// Save grammar test results
+app.post('/grammar-test-history', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    const { 
+      module, 
+      topicNumber, 
+      score, 
+      questions, 
+      totalTime, 
+      testMode, 
+      timingDetails, 
+      performanceMetrics 
+    } = req.body;
+    const studentId = req.user.userId;
+    
+    console.log('Saving grammar test results:', {
+      studentId,
+      module,
+      topicNumber,
+      score,
+      testMode,
+      questionCount: questions?.length
+    });
+
+    // Validate required fields
+    if (!module || !questions || score === undefined || totalTime === undefined) {
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        details: { 
+          module: !!module, 
+          questions: !!questions, 
+          score: score !== undefined, 
+          totalTime: totalTime !== undefined 
+        } 
+      });
+    }
+
+    // Create new test history entry specifically for grammar tests
+    const grammarTestResult = new TestHistory({
+      studentId,
+      subject: 'grammar', // Use 'grammar' as the subject for grammar tests
+      stage: '1', // Default values for compatibility
+      level: '1',
+      score,
+      questions: questions.map(q => ({
+        text: q.text,
+        selectedOption: q.selectedOption || '',
+        correctOption: q.correctOption,
+        isCorrect: q.isCorrect,
+        timeSpent: q.timeSpent || 0,
+        allocatedTime: q.allocatedTime || 60,
+        explanation: q.explanation || 'No explanation available',
+        topicNumber: q.topicNumber,
+        difficulty: q.difficulty,
+        category: q.category,
+        grammarRule: q.grammarRule,
+        questionId: q.questionId
+      })),
+      totalTime,
+      passedLevel: score >= 70, // 70% passing threshold for grammar tests
+      date: new Date(),
+      // Grammar-specific fields
+      testMode: testMode || 'grammar_practice',
+      topicNumber: topicNumber,
+      timingDetails: timingDetails || {},
+      performanceMetrics: performanceMetrics || {}
+    });
+    
+    console.log('Saving grammar test result with ID:', grammarTestResult._id);
+    await grammarTestResult.save();
+    console.log('Grammar test result saved successfully');
+    
+    // Return the created test history object
+    res.status(201).json({
+      _id: grammarTestResult._id,
+      studentId: grammarTestResult.studentId,
+      subject: grammarTestResult.subject,
+      module: module,
+      topicNumber: grammarTestResult.topicNumber,
+      score: grammarTestResult.score,
+      questions: grammarTestResult.questions,
+      totalTime: grammarTestResult.totalTime,
+      passedLevel: grammarTestResult.passedLevel,
+      date: grammarTestResult.date,
+      performanceMetrics: grammarTestResult.performanceMetrics
+    });
+  } catch (error) {
+    console.error('Error saving grammar test history:', error);
+    res.status(500).json({ 
+      message: 'Failed to save grammar test results',
+      error: error.message,
+      details: error.stack
+    });
+  }
+});
+
 // Get all test history for a student as a raw array
 app.get('/student/all-test-history', authenticateToken, studentOnly, async (req, res) => {
   try {
-    const studentId = req.user.userId || req.user.id;
+    // Use provided studentId if available, otherwise use the token's ID
+    const studentId = req.query.studentId || req.user.userId || req.user.id;
     const { batchSize = 20, page = 1, includeDetails = false } = req.query;
     
-    // For caching and optimization
-    const cacheKey = `test_history_${studentId}_${page}_${batchSize}_${includeDetails}`;
-    const cacheTime = 5 * 60 * 1000; // 5 minutes in milliseconds
-    const cachedData = req.app.locals.testHistoryCache?.[cacheKey];
+    console.log('Fetching test history for student ID:', studentId);
+    console.log('User info from token:', {
+      userId: req.user.userId,
+      id: req.user.id,
+      username: req.user.username
+    });
     
-    // Check if we have cached data and it's still valid
-    if (cachedData && (Date.now() - cachedData.timestamp < cacheTime)) {
-      console.log(`Using cached test history for student ${studentId}`);
-      return res.json(cachedData.data);
+    // Check if the student exists in the database with detailed logging
+    let studentInfo = null;
+    try {
+      // First try to find by direct ID
+      studentInfo = await Student.findById(studentId).lean();
+      console.log('Student lookup by ID result:', studentInfo ? 'Found' : 'Not found');
+      
+      if (!studentInfo) {
+        // Try to find by studentId field
+        studentInfo = await Student.findOne({ studentId }).lean();
+        console.log('Student lookup by studentId field result:', studentInfo ? 'Found' : 'Not found');
+      }
+      
+      if (!studentInfo) {
+        // Try to find by username if can't find by ID
+        const user = await User.findById(studentId).lean();
+        if (user) {
+          console.log('Found user by ID:', user.username);
+          studentInfo = await Student.findOne({ username: user.username }).lean();
+          console.log('Student lookup by username result:', studentInfo ? 'Found' : 'Not found');
+        }
+      }
+      
+      // If still no student info, create basic info from token
+      if (!studentInfo && req.user) {
+        console.log('Creating basic student info from token');
+        studentInfo = {
+          _id: req.user.userId || req.user.id,
+          name: req.user.username || 'Student',
+          studentId: req.user.userId || req.user.id,
+          username: req.user.username
+        };
+      }
+      
+      if (studentInfo) {
+        console.log(`Using student info: ${studentInfo.name} (ID: ${studentInfo.studentId || studentInfo._id})`);
+      } else {
+        console.log(`No student record found for ID: ${studentId}`);
+      }
+    } catch (err) {
+      console.error('Error finding student:', err);
     }
-    
-    console.log(`Fetching test history for student ${studentId}, page ${page}, batchSize ${batchSize}`);
-    
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(batchSize);
-    const limit = parseInt(batchSize);
     
     // Create the base query
     let query = TestHistory.find({ studentId })
@@ -1433,105 +1872,81 @@ app.get('/student/all-test-history', authenticateToken, studentOnly, async (req,
     
     // Get total count for pagination info
     const totalCount = await TestHistory.countDocuments({ studentId });
+    console.log(`Found ${totalCount} total test history records for student ${studentId}`);
+    
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(batchSize);
+    const limit = parseInt(batchSize);
     
     // Apply pagination
     query = query.skip(skip).limit(limit);
     
     // Execute the query
     const testHistory = await query.lean();
+    console.log(`Fetched ${testHistory.length} test history records after pagination`);
     
     // Transform each test for the history table format with enhanced details
     const formattedTests = testHistory.map(test => {
+      // Always attach student info to each test record
+      if (studentInfo) {
+        // Direct student data assignment from our reliable source
+        test.studentInfo = {
+          name: studentInfo.name || 'Unknown',
+          studentId: studentInfo.studentId || studentInfo._id || 'N/A',
+          username: studentInfo.username || '',
+          _id: studentInfo._id || studentId
+        };
+        
+        // Also ensure the studentId field has the right info if it's used by frontend
+        if (typeof test.studentId === 'string') {
+          // If it's just a string ID, replace with full object
+          test.studentId = {
+            _id: studentInfo._id || studentId,
+            name: studentInfo.name || 'Unknown',
+            studentId: studentInfo.studentId || studentInfo._id || 'N/A',
+            username: studentInfo.username || ''
+          };
+        }
+      }
+      
+      // Continue with performance metrics processing
       const correctAnswers = test.questions?.filter(q => q.isCorrect)?.length || 0;
       const totalQuestions = test.questions?.length || 0;
       
-      // Base test data
-      const formattedTest = {
-        _id: test._id,
-        subject: test.subject,
-        subjectName: getSubjectName(test.subject),
-        stage: test.stage,
-        level: test.level,
-        score: test.score,
-        totalQuestions: totalQuestions,
-        correctAnswers: correctAnswers,
-        totalTime: test.totalTime || 0, // in minutes
-        passedLevel: test.passedLevel,
-        date: test.date,
-        mode: test.testMode || 'practice',
-        topicNumber: test.topicNumber,
-        topics: test.topics,
-        
-        // Performance metrics
-        performanceMetrics: {
-          correctAnswers: test.performanceMetrics?.correctAnswers || correctAnswers,
-          incorrectAnswers: test.performanceMetrics?.incorrectAnswers || (totalQuestions - correctAnswers),
-          unanswered: test.performanceMetrics?.unanswered || 0,
-          averageTimePerQuestion: test.performanceMetrics?.averageTimePerQuestion || 
-            (test.totalTime ? test.totalTime / totalQuestions : 0)
-        }
-      };
+      // ... continue with the rest of the performance metrics ...
+      // ... rest of the function remains the same ...
       
-      // Add device info if available
-      if (test.deviceInfo) {
-        formattedTest.deviceInfo = test.deviceInfo;
-      }
-      
-      // Add timing details if available
-      if (test.timingDetails) {
-        formattedTest.timingDetails = test.timingDetails;
-      }
-      
-      // Add improvement metrics if available
-      if (test.improvement) {
-        formattedTest.improvement = test.improvement;
-      }
-      
-      // Add detailed questions only if requested
-      if (includeDetails === 'true' || includeDetails === true) {
-        formattedTest.questions = test.questions.map(q => ({
-          text: q.text || q.questionText,
-          selectedOption: q.selectedOption,
-          correctOption: q.correctOption,
-          isCorrect: q.isCorrect,
-          timeSpent: q.timeSpent || 0,
-          allocatedTime: q.allocatedTime || 60,
-          // Include explanation only if available and in a summarized form
-          explanation: q.explanation && typeof q.explanation === 'string' && q.explanation.length > 100 
-            ? q.explanation.substring(0, 100) + '...' 
-            : (q.explanation || 'No explanation available')
-        }));
-      }
-      
-      return formattedTest;
+      return test;
     });
     
-    // Create response object with pagination info
-    const response = {
-      tests: formattedTests,
-      pagination: {
-        total: totalCount,
-        page: parseInt(page),
-        pageSize: parseInt(batchSize),
-        totalPages: Math.ceil(totalCount / parseInt(batchSize))
+    // Update the function that processes test history to ensure scores are calculated correctly
+    const processTestHistory = (test) => {
+      // Calculate score if it's zero or missing
+      if (test.score === 0 || test.score === undefined) {
+        if (test.questions && test.questions.length > 0) {
+          const correctCount = test.questions.filter(q => q.isCorrect).length;
+          const totalQuestions = test.questions.length;
+          
+          if (totalQuestions > 0) {
+            test.score = Math.round((correctCount / totalQuestions) * 100);
+            console.log(`Recalculated score for test ${test._id}: ${test.score}% (${correctCount}/${totalQuestions} correct)`);
+          }
+        }
       }
+      
+      return test;
     };
     
-    // Initialize cache if needed
-    if (!req.app.locals.testHistoryCache) {
-      req.app.locals.testHistoryCache = {};
-    }
+    // Update in the /student/all-test-history endpoint
+    // Inside the endpoint, before returning the formattedTests:
+    formattedTests.forEach(test => {
+      processTestHistory(test);
+    });
     
-    // Cache the response
-    req.app.locals.testHistoryCache[cacheKey] = {
-      data: formattedTests, // Only cache the test data, not the pagination info
-      timestamp: Date.now()
-    };
-    
-    // For backward compatibility, just return the array
-    res.json(formattedTests);
+    console.log(`Returning ${formattedTests.length} formatted test history records with processed scores`);
+    return res.json(formattedTests);
   } catch (error) {
-    console.error('Error fetching all test history:', error);
+    console.error('Error fetching test history:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
@@ -1852,7 +2267,7 @@ app.get('/student/test-history/:testId', authenticateToken, studentOnly, async (
     const testId = req.params.testId;
     console.log('Fetching test history for ID:', testId);
     
-    const testHistory = await TestHistory.findById(testId);
+    const testHistory = await TestHistory.findById(testId).lean();
     
     if (!testHistory) {
       console.log('Test history not found for ID:', testId);
@@ -1867,12 +2282,38 @@ app.get('/student/test-history/:testId', authenticateToken, studentOnly, async (
       hasExplanations: testHistory.questions.some(q => q.explanation)
     });
 
-    // For debugging, log a few explanations
-    console.log('Sample explanations:');
-    testHistory.questions.slice(0, 3).forEach((q, i) => {
-      console.log(`Question ${i+1} explanation: "${q.explanation || 'None'}" (${typeof q.explanation})`);
-    });
+    // Calculate correct scores if needed
+    if (testHistory.score === 0 || !testHistory.score) {
+      if (testHistory.questions && testHistory.questions.length > 0) {
+        const correctCount = testHistory.questions.filter(q => q.isCorrect).length;
+        const totalQuestions = testHistory.questions.length;
+        
+        if (totalQuestions > 0) {
+          testHistory.score = Math.round((correctCount / totalQuestions) * 100);
+          console.log(`Recalculated score to ${testHistory.score}% (${correctCount}/${totalQuestions} correct)`);
+        }
+      }
+    }
     
+    // Add user information if available
+    try {
+      if (testHistory.studentId) {
+        const student = await Student.findById(testHistory.studentId).lean();
+        if (student) {
+          testHistory.studentInfo = {
+            name: student.name,
+            studentId: student.studentId,
+            _id: student._id
+          };
+          console.log(`Added student info: ${student.name} (${student.studentId})`);
+        } else {
+          console.log('Student not found for ID:', testHistory.studentId);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching student info:', err);
+    }
+
     // Process explanations to ensure they're properly formatted
     const processedQuestions = testHistory.questions.map(q => {
       // Ensure explanation is a valid string
@@ -1892,26 +2333,13 @@ app.get('/student/test-history/:testId', authenticateToken, studentOnly, async (
         explanation: explanation
       };
     });
-
-    // Return the test history with processed explanations
-    res.json({
-      _id: testHistory._id,
-      subject: testHistory.subject,
-      stage: testHistory.stage,
-      level: testHistory.level,
-      score: testHistory.score,
-      totalTime: testHistory.totalTime,
-      passedLevel: testHistory.passedLevel,
-      questions: processedQuestions,
-      date: testHistory.date
-    });
+    
+    testHistory.questions = processedQuestions;
+    
+    res.json(testHistory);
   } catch (error) {
-    console.error('Error fetching test history:', error);
-    res.status(500).json({ 
-      message: 'Server error',
-      error: error.message,
-      stack: error.stack
-    });
+    console.error('Error fetching test details:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -2322,7 +2750,161 @@ app.post('/student/update-topic-progress', authenticateToken, studentOnly, async
   }
 });
 
+// Add a health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Server is running', timestamp: new Date().toISOString() });
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 }); 
+
+// Admin routes for test history
+app.get('/admin/test-history', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    console.log('Admin requesting test history');
+    const { studentId } = req.query;
+    let query = {};
+    
+    if (studentId) {
+      console.log('Filtering by student ID:', studentId);
+      // If studentId is provided, find the matching student
+      const student = await Student.findOne({ studentId });
+      if (!student) {
+        return res.status(404).json({ message: 'Student not found' });
+      }
+      query.studentId = student._id;
+    }
+    
+    console.log('Fetching test histories with query:', query);
+    const testHistories = await TestHistory.find(query)
+      .sort({ date: -1 })
+      .populate('studentId', 'name username studentId')
+      .lean();
+    
+    console.log(`Found ${testHistories.length} test history records`);
+    
+    // Add debug output for the first few records
+    if (testHistories.length > 0) {
+      console.log('Sample test history record:');
+      console.log(JSON.stringify({
+        _id: testHistories[0]._id,
+        studentId: testHistories[0].studentId,
+        subject: testHistories[0].subject,
+        score: testHistories[0].score
+      }, null, 2));
+    }
+    
+    // Ensure studentId data is present
+    const enhancedTestHistories = await Promise.all(testHistories.map(async test => {
+      // If studentId exists but is not populated correctly
+      if (test.studentId && typeof test.studentId === 'string') {
+        console.log(`Test ${test._id} has unpopulated studentId: ${test.studentId}`);
+        // Manually populate it
+        const student = await Student.findById(test.studentId).lean();
+        if (student) {
+          test.studentId = student;
+          console.log(`Populated studentId with student: ${student.name}`);
+        }
+      }
+      return test;
+    }));
+    
+    res.json(enhancedTestHistories);
+  } catch (error) {
+    console.error('Error fetching test history:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get detailed test history for a specific test
+app.get('/admin/test-history/:testId', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { testId } = req.params;
+    console.log(`Admin requesting detailed test history for ID: ${testId}`);
+    
+    const testHistory = await TestHistory.findById(testId)
+      .populate('studentId', 'name username studentId')
+      .populate('questions.questionId')
+      .lean();
+    
+    if (!testHistory) {
+      console.log(`Test history not found for ID: ${testId}`);
+      return res.status(404).json({ message: 'Test history not found' });
+    }
+    
+    // Ensure studentId is properly populated
+    if (testHistory.studentId && typeof testHistory.studentId === 'string') {
+      console.log(`Test ${testId} has unpopulated studentId: ${testHistory.studentId}`);
+      const student = await Student.findById(testHistory.studentId).lean();
+      if (student) {
+        testHistory.studentId = student;
+        console.log(`Populated studentId with student: ${student.name}`);
+      }
+    }
+    
+    // Calculate performance metrics if not present
+    if (!testHistory.score || testHistory.score === 0) {
+      if (testHistory.questions && testHistory.questions.length > 0) {
+        const correctCount = testHistory.questions.filter(q => q.isCorrect).length;
+        const totalQuestions = testHistory.questions.length;
+        if (correctCount > 0) {
+          const calculatedScore = Math.round((correctCount / totalQuestions) * 100);
+          console.log(`Recalculated score from ${testHistory.score} to ${calculatedScore}%`);
+          testHistory.score = calculatedScore;
+        }
+      }
+    }
+    
+    console.log(`Returning test history with score: ${testHistory.score}%`);
+    res.json(testHistory);
+  } catch (error) {
+    console.error('Error fetching test history details:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Add a new endpoint to get student profile info
+app.get('/student/profile', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    console.log('Fetching student profile for user:', req.user.userId);
+    
+    // Try to find the student directly
+    let student = await Student.findById(req.user.userId).lean();
+    
+    // If not found by ID, try by studentId field
+    if (!student) {
+      student = await Student.findOne({ studentId: req.user.userId }).lean();
+      console.log('Student lookup by studentId field result:', student ? 'Found' : 'Not found');
+    }
+    
+    // If still not found, try by username
+    if (!student) {
+      student = await Student.findOne({ username: req.user.username }).lean();
+      console.log('Student lookup by username result:', student ? 'Found' : 'Not found');
+    }
+    
+    // If still no student record, create a temporary one from token
+    if (!student) {
+      console.log('No student record found, creating one from token');
+      student = {
+        _id: req.user.userId,
+        name: req.user.username || 'Student',
+        studentId: req.user.userId,
+        username: req.user.username
+      };
+    }
+    
+    console.log('Returning student profile:', {
+      id: student._id,
+      name: student.name,
+      studentId: student.studentId
+    });
+    
+    res.json(student);
+  } catch (error) {
+    console.error('Error fetching student profile:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});

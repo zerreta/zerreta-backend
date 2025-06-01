@@ -5,6 +5,10 @@ const studentSchema = new mongoose.Schema({
   name: { type: String, required: true },
   username: { type: String, required: true },
   password: { type: String, required: true },
+  email: { type: String },
+  phone: { type: String },
+  grade: { type: String },
+  school: { type: String },
   institution: { type: String, default: 'Default Institution' },
   subjects: {
     physics: {
