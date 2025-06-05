@@ -1178,6 +1178,59 @@ app.delete('/admin/grammar-questions/:id', authenticateToken, adminOnly, async (
   }
 });
 
+// Bulk upload grammar questions (Admin only)
+app.post('/admin/grammar-questions/bulk', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { questions } = req.body;
+    
+    if (!questions || !Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ message: 'Questions array is required and must not be empty' });
+    }
+    
+    console.log('Received bulk upload request for grammar questions with', questions.length, 'questions');
+    
+    // Validate each question
+    for (let i = 0; i < questions.length; i++) {
+      const question = questions[i];
+      
+      // Check required fields
+      if (!question.module || !question.topicNumber || !question.questionText || 
+          !question.options || !Array.isArray(question.options) || question.options.length !== 4 ||
+          typeof question.correctOption !== 'number' || question.correctOption < 0 || question.correctOption > 3) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} is invalid. Required fields: module, topicNumber, questionText, options (array of 4), correctOption (0-3)` 
+        });
+      }
+      
+      // Validate options are not empty
+      if (question.options.some(option => !option || option.trim().length === 0)) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} has empty options. All options must have text.` 
+        });
+      }
+    }
+    
+    // Insert all questions
+    const savedQuestions = await GrammarQuestion.insertMany(questions);
+    
+    console.log(`Successfully uploaded ${savedQuestions.length} grammar questions`);
+    
+    res.status(201).json({
+      success: true,
+      message: `${savedQuestions.length} grammar questions uploaded successfully`,
+      count: savedQuestions.length
+    });
+    
+  } catch (error) {
+    console.error('Error handling bulk upload for grammar questions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error processing bulk upload',
+      error: error.message
+    });
+  }
+});
+
 // Student endpoint to get topic-based test questions
 app.get('/student/test', authenticateToken, studentOnly, async (req, res) => {
   try {
