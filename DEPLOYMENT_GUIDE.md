@@ -1,10 +1,22 @@
 # 🚀 ZERRETA - QUICK DEPLOYMENT GUIDE
 
 ## 📋 **CURRENT LIVE URLS**
-- **Frontend (Main App)**: https://frontend-amber-sigma-11-6yvscsp0t-pratheep-bits-projects.vercel.app
+- **Frontend (Latest)**: https://frontend-amber-sigma-11-6onupmygn-pratheep-bits-projects.vercel.app
 - **Frontend (Target URL)**: https://frontend-amber-sigma-11.vercel.app/ 
 - **Backend (API)**: https://zerreta-backend.onrender.com
 - **Database**: MongoDB Atlas (Remote)
+
+## 🎉 **LATEST DEPLOYMENT STATUS**
+- **✅ Code Pushed to GitHub**: Both frontend and backend repositories updated
+- **✅ Frontend Deployed**: Latest Grammar Test Review feature deployed successfully  
+- **✅ Backend Updated**: Grammar questions bulk upload functionality live
+- **🕒 Last Deployed**: June 5, 2025
+
+## 🚀 **NEW FEATURES LIVE**
+- **📝 Grammar Test Review**: Detailed question-by-question analysis with explanations
+- **🎯 Visual Feedback**: Color-coded results (correct/incorrect/unanswered)
+- **⏱️ Performance Metrics**: Time tracking per question and overall statistics
+- **🎮 MathOrbit Game**: Interactive orbital mechanics math learning experience
 
 ## 🏗️ **REPOSITORY STRUCTURE**
 ```
