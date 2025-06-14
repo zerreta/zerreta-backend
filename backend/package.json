@@ -1,30 +1,44 @@
 {
-  "name": "backend",
+  "name": "zerreta-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "NEET Learning Platform Backend API",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "dev": "node server.js",
-    "postinstall": "npm rebuild bcrypt --build-from-source"
+    "dev": "nodemon server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "bcrypt": "^5.1.1",
-    "cors": "^2.8.5",
-    "dotenv": "^16.5.0",
-    "express": "^4.21.2",
+    "express": "^4.18.2",
+    "mongoose": "^7.5.0",
+    "bcrypt": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mongodb": "^6.15.0",
-    "mongoose": "^8.12.1",
-    "multer": "^1.4.5-lts.1"
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "dotenv": "^16.3.1",
+    "blockly": "^11.2.2",
+    "framer-motion": "^12.9.2",
+    "katex": "^0.16.21",
+    "prismjs": "^1.30.0",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^15.6.1",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
-    "eslint": "^9.22.0",
-    "eslint-webpack-plugin": "^5.0.0"
-  }
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "neet",
+    "education",
+    "api",
+    "backend",
+    "express",
+    "mongodb"
+  ],
+  "author": "Zerreta",
+  "license": "MIT"
 }
