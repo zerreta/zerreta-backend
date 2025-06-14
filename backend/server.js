@@ -1231,6 +1231,417 @@ app.post('/admin/grammar-questions/bulk', authenticateToken, adminOnly, async (r
   }
 });
 
+// =====================================================
+// APTITUDE QUESTION ROUTES
+// =====================================================
+
+// Import Aptitude Question model
+const AptitudeQuestion = require('./models/AptitudeQuestion');
+
+// Get all aptitude questions with filtering (Admin only)
+app.get('/admin/aptitude-questions', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { category, grade, difficulty, topic } = req.query;
+    console.log('Fetching aptitude questions with filters:', { category, grade, difficulty, topic });
+    
+    let query = {};
+    
+    if (category) {
+      query.category = category;
+    }
+    
+    if (grade) {
+      query.grade = grade;
+    }
+    
+    if (difficulty) {
+      query.difficulty = difficulty;
+    }
+    
+    if (topic) {
+      query.topic = topic;
+    }
+    
+    const questions = await AptitudeQuestion.find(query).sort({ createdAt: -1 });
+    console.log(`Found ${questions.length} aptitude questions`);
+    
+    res.json(questions);
+  } catch (error) {
+    console.error('Error fetching aptitude questions:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get aptitude syllabus and topics
+app.get('/aptitude-syllabus', (req, res) => {
+  const syllabus = {
+    "11": {
+      "quantitative": {
+        "easy": ["Number System", "Simplification & Approximation", "LCM & HCF"],
+        "medium": ["Ratio & Proportion", "Percentage", "Averages"],
+        "hard": ["Time, Speed & Distance", "Time & Work"]
+      },
+      "logical": {
+        "easy": ["Number Series", "Alphabet Series", "Direction Sense"],
+        "medium": ["Coding-Decoding", "Order & Ranking", "Blood Relations (basic)"],
+        "hard": ["Blood Relations (complex)", "Calendar Problems", "Clock Problems"]
+      },
+      "verbal": {
+        "easy": ["Synonyms", "Antonyms", "Vocabulary Usage"],
+        "medium": ["Spotting Errors", "Fill in the Blanks"],
+        "hard": ["Sentence Improvement", "Reading Comprehension (basic)"]
+      }
+    },
+    "12": {
+      "quantitative": {
+        "easy": ["Profit & Loss", "Simple Interest", "Mixtures & Alligation"],
+        "medium": ["Compound Interest", "Boats & Streams", "Pipes & Cisterns"],
+        "hard": ["Mensuration (2D & 3D)", "Permutations & Combinations", "Probability", "Data Interpretation"]
+      },
+      "logical": {
+        "easy": ["Syllogism", "Statements & Conclusions"],
+        "medium": ["Seating Arrangement (Linear & Circular)", "Input-Output"],
+        "hard": ["Puzzles", "Data Sufficiency"]
+      },
+      "verbal": {
+        "easy": ["Idioms & Phrases", "Active & Passive Voice"],
+        "medium": ["Cloze Test", "Direct & Indirect Speech"],
+        "hard": ["Para Jumbles", "Reading Comprehension (advanced)"]
+      }
+    }
+  };
+  
+  res.json(syllabus);
+});
+
+// Get aptitude questions for students (for tests)
+app.get('/aptitude-questions', authenticateToken, studentOnly, async (req, res) => {
+  try {
+    const { category, grade, difficulty, topic } = req.query;
+    console.log('Student fetching aptitude questions:', { category, grade, difficulty, topic });
+    
+    if (!category || !grade || !difficulty) {
+      return res.status(400).json({ message: 'Category, grade, and difficulty are required' });
+    }
+    
+    let query = { category, grade, difficulty };
+    
+    if (topic) {
+      query.topic = topic;
+    }
+    
+    const questions = await AptitudeQuestion.find(query).lean();
+    console.log(`Found ${questions.length} aptitude questions for category: ${category}, grade: ${grade}, difficulty: ${difficulty}`);
+    
+    // Shuffle and limit to maximum 20 questions
+    const shuffledQuestions = questions.sort(() => 0.5 - Math.random()).slice(0, 20);
+    
+    res.json(shuffledQuestions);
+  } catch (error) {
+    console.error('Error fetching aptitude questions for student:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Create a new aptitude question (Admin only)
+app.post('/admin/aptitude-questions', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    console.log('=== APTITUDE QUESTION CREATION DEBUG ===');
+    console.log('MongoDB connection state:', mongoose.connection.readyState);
+    console.log('Creating new aptitude question with data:', JSON.stringify(req.body, null, 2));
+    
+    // Check if database is connected
+    if (mongoose.connection.readyState !== 1) {
+      console.error('Database not connected! Current state:', mongoose.connection.readyState);
+      return res.status(500).json({ 
+        message: 'Database connection error. Please try again.',
+        connectionState: mongoose.connection.readyState
+      });
+    }
+    
+    const {
+      category,
+      grade,
+      difficulty,
+      topic,
+      questionText,
+      options,
+      correctOption,
+      explanation,
+      timeAllocation,
+      imageUrl
+    } = req.body;
+    
+    console.log('Extracted fields:', {
+      category,
+      grade,
+      difficulty,
+      topic,
+      questionText: questionText ? questionText.substring(0, 50) + '...' : 'undefined',
+      options: options ? `Array of ${options.length} items` : 'undefined',
+      correctOption,
+      explanation: explanation ? 'provided' : 'not provided',
+      timeAllocation,
+      imageUrl: imageUrl ? 'provided' : 'not provided'
+    });
+    
+    // Validate required fields
+    if (!category || !grade || !difficulty || !topic || !questionText || !options || correctOption === undefined) {
+      console.error('Validation failed - missing required fields:', {
+        category: !!category,
+        grade: !!grade,
+        difficulty: !!difficulty,
+        topic: !!topic,
+        questionText: !!questionText,
+        options: !!options,
+        correctOption: correctOption !== undefined
+      });
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        details: { 
+          category: !!category, 
+          grade: !!grade, 
+          difficulty: !!difficulty,
+          topic: !!topic,
+          questionText: !!questionText, 
+          options: !!options, 
+          correctOption: correctOption !== undefined 
+        }
+      });
+    }
+    
+    // Validate options array
+    if (!Array.isArray(options) || options.length !== 4) {
+      console.error('Options validation failed:', {
+        isArray: Array.isArray(options),
+        length: options ? options.length : 'N/A'
+      });
+      return res.status(400).json({ message: 'Options must be an array of 4 items' });
+    }
+    
+    // Check if any option is empty
+    const emptyOptions = options.filter(opt => !opt || opt.trim() === '');
+    if (emptyOptions.length > 0) {
+      console.error('Empty options found:', emptyOptions.length);
+      return res.status(400).json({ message: 'All options must be filled' });
+    }
+    
+    // Validate correct option index
+    if (correctOption < 0 || correctOption >= options.length) {
+      console.error('Invalid correct option index:', correctOption, 'Options length:', options.length);
+      return res.status(400).json({ message: 'Correct option index is invalid' });
+    }
+    
+    // Validate category enum
+    const validCategories = ['quantitative', 'logical', 'verbal'];
+    if (!validCategories.includes(category)) {
+      console.error('Invalid category:', category, 'Valid categories:', validCategories);
+      return res.status(400).json({ message: 'Invalid category. Must be one of: ' + validCategories.join(', ') });
+    }
+    
+    // Validate grade enum
+    const validGrades = ['11', '12'];
+    if (!validGrades.includes(grade)) {
+      console.error('Invalid grade:', grade, 'Valid grades:', validGrades);
+      return res.status(400).json({ message: 'Invalid grade. Must be one of: ' + validGrades.join(', ') });
+    }
+    
+    // Validate difficulty enum
+    const validDifficulties = ['easy', 'medium', 'hard'];
+    if (!validDifficulties.includes(difficulty)) {
+      console.error('Invalid difficulty:', difficulty, 'Valid difficulties:', validDifficulties);
+      return res.status(400).json({ message: 'Invalid difficulty. Must be one of: ' + validDifficulties.join(', ') });
+    }
+    
+    console.log('All validations passed. Creating question object...');
+    
+    const questionData = {
+      category,
+      grade: grade.toString(),
+      difficulty,
+      topic: topic.trim(),
+      questionText: questionText.trim(),
+      options: options.map(opt => opt.trim()),
+      correctOption: parseInt(correctOption),
+      explanation: (explanation || '').trim(),
+      timeAllocation: parseInt(timeAllocation) || 60,
+      imageUrl: (imageUrl || '').trim()
+    };
+    
+    console.log('Final question data:', JSON.stringify(questionData, null, 2));
+    
+    // Test if AptitudeQuestion model is available
+    if (!AptitudeQuestion) {
+      console.error('AptitudeQuestion model is not available!');
+      return res.status(500).json({ message: 'Aptitude question model not loaded' });
+    }
+    
+    console.log('Creating new AptitudeQuestion instance...');
+    const newQuestion = new AptitudeQuestion(questionData);
+    
+    console.log('Validating question before save...');
+    const validationError = newQuestion.validateSync();
+    if (validationError) {
+      console.error('Validation error:', validationError);
+      return res.status(400).json({ 
+        message: 'Validation error', 
+        errors: validationError.errors 
+      });
+    }
+    
+    console.log('Saving new aptitude question to database...');
+    const savedQuestion = await newQuestion.save();
+    
+    console.log('Aptitude question saved successfully:', savedQuestion._id);
+    res.status(201).json(savedQuestion);
+  } catch (error) {
+    console.error('Error creating aptitude question:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update an aptitude question (Admin only)
+app.put('/admin/aptitude-questions/:id', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    console.log('Updating aptitude question:', req.params.id);
+    
+    const {
+      category,
+      grade,
+      difficulty,
+      topic,
+      questionText,
+      options,
+      correctOption,
+      explanation,
+      timeAllocation,
+      imageUrl
+    } = req.body;
+    
+    const updatedQuestion = await AptitudeQuestion.findByIdAndUpdate(
+      req.params.id,
+      {
+        category,
+        grade,
+        difficulty,
+        topic,
+        questionText,
+        options,
+        correctOption,
+        explanation,
+        timeAllocation,
+        imageUrl
+      },
+      { new: true, runValidators: true }
+    );
+    
+    if (!updatedQuestion) {
+      return res.status(404).json({ message: 'Aptitude question not found' });
+    }
+    
+    console.log('Aptitude question updated successfully:', updatedQuestion._id);
+    res.json(updatedQuestion);
+  } catch (error) {
+    console.error('Error updating aptitude question:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete an aptitude question (Admin only)
+app.delete('/admin/aptitude-questions/:id', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    console.log('Deleting aptitude question:', req.params.id);
+    
+    const deletedQuestion = await AptitudeQuestion.findByIdAndDelete(req.params.id);
+    
+    if (!deletedQuestion) {
+      return res.status(404).json({ message: 'Aptitude question not found' });
+    }
+    
+    console.log('Aptitude question deleted successfully:', req.params.id);
+    res.json({ message: 'Aptitude question deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting aptitude question:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Bulk upload aptitude questions (Admin only)
+app.post('/admin/aptitude-questions/bulk', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { questions } = req.body;
+    
+    if (!questions || !Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ message: 'Questions array is required and must not be empty' });
+    }
+    
+    console.log('Received bulk upload request for aptitude questions with', questions.length, 'questions');
+    
+    // Validate each question
+    for (let i = 0; i < questions.length; i++) {
+      const question = questions[i];
+      
+      // Check required fields
+      if (!question.category || !question.grade || !question.difficulty || !question.topic || !question.questionText || 
+          !question.options || !Array.isArray(question.options) || question.options.length !== 4 ||
+          typeof question.correctOption !== 'number' || question.correctOption < 0 || question.correctOption > 3) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} is invalid. Required fields: category, grade, difficulty, topic, questionText, options (array of 4), correctOption (0-3)` 
+        });
+      }
+      
+      // Validate options are not empty
+      if (question.options.some(option => !option || option.trim().length === 0)) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} has empty options. All options must have text.` 
+        });
+      }
+      
+      // Validate enums
+      const validCategories = ['quantitative', 'logical', 'verbal'];
+      const validGrades = ['11', '12'];
+      const validDifficulties = ['easy', 'medium', 'hard'];
+      
+      if (!validCategories.includes(question.category)) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} has invalid category. Must be one of: ${validCategories.join(', ')}` 
+        });
+      }
+      
+      if (!validGrades.includes(question.grade.toString())) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} has invalid grade. Must be one of: ${validGrades.join(', ')}` 
+        });
+      }
+      
+      if (!validDifficulties.includes(question.difficulty)) {
+        return res.status(400).json({ 
+          message: `Question ${i + 1} has invalid difficulty. Must be one of: ${validDifficulties.join(', ')}` 
+        });
+      }
+    }
+    
+    // Insert all questions
+    const savedQuestions = await AptitudeQuestion.insertMany(questions);
+    
+    console.log(`Successfully uploaded ${savedQuestions.length} aptitude questions`);
+    
+    res.status(201).json({
+      success: true,
+      message: `${savedQuestions.length} aptitude questions uploaded successfully`,
+      count: savedQuestions.length
+    });
+    
+  } catch (error) {
+    console.error('Error handling bulk upload for aptitude questions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error processing bulk upload',
+      error: error.message
+    });
+  }
+});
+
 // Student endpoint to get topic-based test questions
 app.get('/student/test', authenticateToken, studentOnly, async (req, res) => {
   try {
